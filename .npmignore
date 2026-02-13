@@ -1,0 +1,37 @@
+# Source files (dist is published)
+src/
+tsconfig.json
+
+# Examples and tests
+examples/
+tests/
+*.flow
+
+# Environment and credentials
+.env
+.env.*
+*.env
+credentials.yaml
+.slapify/
+
+# IDE and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Logs and temp files
+*.log
+npm-debug.log*
+.npm/
+
+# Test reports
+test-reports/
+
+# Git
+.git/
+.gitignore
+
+# Other
+*.tgz
+coverage/
