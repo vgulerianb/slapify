@@ -1,0 +1,71 @@
+{
+  "name": "slapify",
+  "version": "0.0.19",
+  "description": "AI-powered browser automation — autonomous task agent, performance auditing, and E2E test flows in plain English",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "slapify": "./bin/slapify.js"
+  },
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "bin"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/index.js",
+    "lint": "tsc --noEmit",
+    "minify": "find dist -name '*.js' | xargs -P4 -I{} terser {} --compress --mangle --module -o {}",
+    "prepublishOnly": "npm run build && npm run minify"
+  },
+  "keywords": [
+    "ai",
+    "agent",
+    "browser-automation",
+    "testing",
+    "e2e",
+    "natural-language",
+    "performance",
+    "web-vitals",
+    "task-runner",
+    "browser",
+    "slaps"
+  ],
+  "author": "slaps.dev",
+  "license": "MIT",
+  "homepage": "https://slaps.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vgulerianb/slapify"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "^0.0.30",
+    "@ai-sdk/google": "^1.0.0",
+    "@ai-sdk/groq": "^1.0.0",
+    "@ai-sdk/mistral": "^1.0.0",
+    "@ai-sdk/openai": "^0.0.30",
+    "@types/node-cron": "^3.0.11",
+    "agent-browser": "^0.9.0",
+    "ai": "^3.0.0",
+    "chalk": "^5.3.0",
+    "commander": "^12.0.0",
+    "dotenv": "^16.4.1",
+    "glob": "^10.3.10",
+    "lighthouse": "^13.0.3",
+    "node-cron": "^4.2.1",
+    "ora": "^8.0.1",
+    "wreq-js": "^2.0.1",
+    "yaml": "^2.3.4"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "terser": "^5.46.0",
+    "typescript": "^5.3.0"
+  }
+}
