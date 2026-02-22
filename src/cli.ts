@@ -512,13 +512,16 @@ program
         console.log(chalk.cyan(`     export ${info.envVar}=your-key-here`));
       }
       console.log("");
-      console.log(chalk.white(`  2. Run the example test:`));
-      console.log(chalk.cyan(`     slapify run tests/example.flow`));
+      console.log(chalk.white(`  2. Try an autonomous task:`));
+      console.log(chalk.cyan(`     npx slapify task "Monitor Bitcoin price"`));
       console.log("");
-      console.log(chalk.white(`  3. Create your own tests:`));
-      console.log(chalk.cyan(`     slapify create my-first-test`));
+      console.log(chalk.white(`  3. Run the example test flow:`));
+      console.log(chalk.cyan(`     npx slapify run tests/example.flow`));
+      console.log("");
+      console.log(chalk.white(`  4. Create your own persistent tests:`));
+      console.log(chalk.cyan(`     npx slapify create my-first-test`));
       console.log(
-        chalk.cyan(`     slapify generate "test login for myapp.com"`)
+        chalk.cyan(`     npx slapify generate "test login for myapp.com"`)
       );
       console.log("");
       console.log(

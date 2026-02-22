@@ -1,9 +1,17 @@
-# Example Domain Test
-# Tests the example.com website
+# Example Test - Getting Started with Slapify
+# Run with: slapify run tests/example.flow
 
+# Navigate to a website
 Go to https://example.com
+
+# Verify the page loaded correctly
 Verify page title contains "Example"
-Verify "Example Domain" heading is visible
-[Optional] Close any popup that appears
-Click on "Learn more" link
+
+# Handle potential popups (won't fail if not present)
+[Optional] Close any cookie consent popup
+
+# Interact with the page
+Click on "More information" link
+
+# Verify navigation worked
 Verify URL contains "iana.org"

@@ -32,16 +32,16 @@ npx slapify init
 
 ```bash
 # 1. Set up your project (interactive — picks LLM, browser, creates sample files)
-slapify init
+npx slapify init
 
 # 2. Set your API key
 export ANTHROPIC_API_KEY=your-key
 
 # 3a. Run an autonomous task
-slapify task "Summarise the top posts on reddit.com/r/programming today" --report
+npx slapify task "Summarise the top posts on reddit.com/r/programming today" --report
 
 # 3b. Run a test flow
-slapify run tests/example.flow --report
+npx slapify run tests/example.flow --report
 ```
 
 ---
@@ -54,42 +54,42 @@ Give it a goal in plain English. The agent decides what to do, browses pages, ha
 
 ```bash
 # One-off research
-slapify task "What is the current gold price?"
-slapify task "Go to reddit.com/r/programming and summarise the top 5 posts"
-slapify task "Check https://myapp.com and tell me if anything looks broken"
+npx slapify task "What is the current gold price?"
+npx slapify task "Go to reddit.com/r/programming and summarise the top 5 posts"
+npx slapify task "Check https://myapp.com and tell me if anything looks broken"
 
 # Performance audits
-slapify task "Audit the performance of slaps.dev" --report
-slapify task "Audit the home, pricing, and about pages on vercel.com" --report
+npx slapify task "Audit the performance of slaps.dev" --report
+npx slapify task "Audit the home, pricing, and about pages on vercel.com" --report
 
 # Long-running / scheduled
-slapify task "Check my LinkedIn messages every 30 minutes and summarise new ones"
-slapify task "Monitor https://example.com/status every 5 minutes and alert if down"
-slapify task "Check BTC price every hour for 24 hours and give me an end-of-day summary"
+npx slapify task "Check my LinkedIn messages every 30 minutes and summarise new ones"
+npx slapify task "Monitor https://example.com/status every 5 minutes and alert if down"
+npx slapify task "Check BTC price every hour for 24 hours and give me an end-of-day summary"
 
 # Auth-required tasks (agent handles login automatically)
-slapify task "Log into myapp.com and export my account data"
-slapify task "Reply to any unread Slack DMs with a friendly holding message"
+npx slapify task "Log into myapp.com and export my account data"
+npx slapify task "Reply to any unread Slack DMs with a friendly holding message"
 
 # Flags
-slapify task "..." --report           # generate HTML report on exit
-slapify task "..." --headed            # show the browser window
-slapify task "..." --debug             # verbose logs
-slapify task "..." --save-flow         # save steps as a reusable .flow file
-slapify task "..." --max-iterations N  # cap agent loop iterations (default 400)
-slapify task "..." --schema <json> --output <file>  # structured JSON output (see below)
+npx slapify task "..." --report           # generate HTML report on exit
+npx slapify task "..." --headed            # show the browser window
+npx slapify task "..." --debug             # verbose logs
+npx slapify task "..." --save-flow         # save steps as a reusable .flow file
+npx slapify task "..." --max-iterations N  # cap agent loop iterations (default 400)
+npx slapify task "..." --schema <json> --output <file>  # structured JSON output (see below)
 ```
 
 **Structured output (JSON schema)** — Have the agent write data that matches a schema to a file. Use `--schema` (inline JSON or path to a `.json` file) and `--output` (file path). The agent uses a `write_output` tool to append or update the file whenever it has new data — ideal for recurring tasks that keep updating a report.
 
 ```bash
 # One-shot: write structured data once
-slapify task "Get top 5 HN posts and their URLs" \
+npx slapify task "Get top 5 HN posts and their URLs" \
   --schema '{"type":"object","properties":{"posts":{"type":"array"}}}' \
   --output hn.json
 
 # Recurring: schema in a file, agent appends to output each run
-slapify task "Every day at 9am, collect top tech headlines and add to report" \
+npx slapify task "Every day at 9am, collect top tech headlines and add to report" \
   --schema schema.json \
   --output daily-news.json \
   --max-iterations 2000
