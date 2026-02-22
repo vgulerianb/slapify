@@ -2,7 +2,9 @@
 
 **AI-powered browser automation that slaps** — run autonomous agents, audit performance, and write E2E tests in plain English.
 
-By [slaps.dev](https://slaps.dev)
+
+https://github.com/user-attachments/assets/52564f16-7664-4ac3-9e06-e04c17dc4bbf
+
 
 ---
 
