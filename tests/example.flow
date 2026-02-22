@@ -1,0 +1,9 @@
+# Example Domain Test
+# Tests the example.com website
+
+Go to https://example.com
+Verify page title contains "Example"
+Verify "Example Domain" heading is visible
+[Optional] Close any popup that appears
+Click on "Learn more" link
+Verify URL contains "iana.org"
