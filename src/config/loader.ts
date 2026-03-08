@@ -205,19 +205,13 @@ export function initConfig(
 ${llmConfig}
 
 # Browser Automation Settings
-browser:
-  headless: true
-  timeout: 30000        # max time per action (ms)
-  viewport:
-    width: 1280
-    height: 720
-  # Anti-Bot Stealth & Persistence
-  # profile: ".slapify/browser-profile"
-  # userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36..."
-  # args:
-  #   - "--disable-blink-features=AutomationControlled"
-  #   - "--no-sandbox"
 ${browserConfig}
+  # Anti-Bot Stealth & Persistence
+  profile: ".slapify/browser-profile"
+  userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+  args:
+    - "--disable-blink-features=AutomationControlled"
+    - "--no-sandbox"
 # To use Browserbase cloud browsers instead of local (stealth, scalable, no install):
 #   browser:
 #     browserbase:

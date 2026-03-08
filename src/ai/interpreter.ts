@@ -23,6 +23,80 @@ export function getModel(
       const anthropic = createAnthropic({
         apiKey: config.api_key,
         baseURL: config.base_url
+          ? (config.base_url.endsWith('/v1') ? config.base_url : `${config.base_url.replace(/\/$/, '')}/v1`)
+          : undefined,
+        fetch: async (url, options) => {
+          if (process.env.SLAPIFY_DEBUG_AI) {
+            console.log("\n[DEBUG] === OUTGOING ANTHROPIC REQUEST ===");
+            console.log("[DEBUG] URL:", url);
+            if (options?.body) {
+              try {
+                const parsed = JSON.parse(options.body as string);
+                console.log("[DEBUG] BODY:", JSON.stringify(parsed, null, 2));
+              } catch {
+                console.log("[DEBUG] BODY:", options.body);
+              }
+            }
+          }
+          const response = await fetch(url, options);
+
+          if (response.headers.get("content-type")?.includes("application/json")) {
+            try {
+              let text = await response.text();
+
+              if (process.env.SLAPIFY_DEBUG_AI) {
+                console.log("\n[DEBUG] === INCOMING ANTHROPIC RESPONSE ===");
+                console.log("[DEBUG] STATUS:", response.status);
+                console.log("[DEBUG] PAYLOAD:", text.substring(0, 1000) + (text.length > 1000 ? "..." : ""));
+              }
+
+              // The Antigravity proxy injects `thoughtSignature` into tool_use blocks 
+              // and `signature` into thinking blocks (used for Gemini thinking).
+              // More importantly, it emits `type: "thinking"` blocks which crash the
+              // strictly-typed Vercel AI SDK Anthropic parser (expects "text" | "tool_use").
+              // We must scrub these keys and mutate thinking blocks to standard text.
+              if (text.includes('"thoughtSignature"') || text.includes('"signature"') || text.includes('"thinking"')) {
+                const parsed = JSON.parse(text);
+                if (parsed.content && Array.isArray(parsed.content)) {
+                  parsed.content = parsed.content.map((block: any) => {
+                    if (block.thoughtSignature !== undefined) {
+                      delete block.thoughtSignature;
+                    }
+                    if (block.signature !== undefined) {
+                      delete block.signature;
+                    }
+                    if (block.type === 'thinking') {
+                      block.type = 'text';
+                      const thinkContent = block.thinking || '';
+                      block.text = `<thought>\n${thinkContent}\n</thought>`;
+                      delete block.thinking;
+                    }
+                    return block;
+                  });
+                }
+                text = JSON.stringify(parsed);
+              }
+
+              const newHeaders = new Headers(response.headers);
+              newHeaders.delete('content-length');
+              newHeaders.delete('content-encoding');
+
+              // Reconstitute the response with the scrubbed text
+              return new Response(text, {
+                status: response.status,
+                statusText: response.statusText,
+                headers: newHeaders
+              });
+            } catch (e) {
+              if (process.env.SLAPIFY_DEBUG_AI) {
+                console.log("[DEBUG] Could not read or scrub response text:", e);
+              }
+              return response;
+            }
+          }
+
+          return response;
+        }
       });
       return anthropic(config.model) as Parameters<
         typeof generateText

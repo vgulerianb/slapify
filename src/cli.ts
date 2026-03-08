@@ -76,7 +76,7 @@ const program = new Command();
 
 program
   .name("slapify")
-  .description("AI-powered test automation using natural language flow files")
+  .description("AI-powered browser automation that slaps — run autonomous agents, audit performance, and write E2E tests in plain English")
   .version("0.0.21", "-v, -V, --version");
 
 // Init command
@@ -96,9 +96,9 @@ program
       return;
     }
 
-    console.log(chalk.blue.bold("\n🖐️  Welcome to Slapify!\n"));
     console.log(
-      chalk.gray("AI-powered E2E testing that slaps - by slaps.dev\n")
+      chalk.bold.magenta("\n🖐️ slapify\n") +
+      chalk.gray("AI-powered browser automation that slaps - by slaps.dev\n")
     );
 
     // Import the new functions
@@ -2019,6 +2019,12 @@ program
       spinnerInterval = null;
       process.stdout.write("\x1b[2K\r");
       console.error(chalk.red(`\n  Task failed: ${err?.message || err}`));
+      if (process.env.SLAPIFY_DEBUG_AI) {
+        console.error(chalk.dim(`\n  Stack Trace:\n${err?.stack || ""}`));
+        if (err?.cause) {
+          console.error(chalk.yellow(`\n  Error Cause:\n${JSON.stringify(err.cause, null, 2)}`));
+        }
+      }
       if (activeSession) {
         await generateAndPrintReport(activeSession);
       }
