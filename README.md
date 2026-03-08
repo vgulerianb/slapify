@@ -12,8 +12,9 @@ https://github.com/user-attachments/assets/52564f16-7664-4ac3-9e06-e04c17dc4bbf
 
 | Mode       | What it does                                                                                                                                                   |
 | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **`task`** | Autonomous AI agent — give it any goal, it figures out how to achieve it. Browses, logs in, schedules itself, audits performance, remembers state across runs. |
-| **`run`**  | Execute `.flow` test files — plain-English E2E tests with screenshots and HTML reports                                                                         |
+| **`task`**   | Autonomous AI agent — give it any goal, it figures out how to achieve it. Browses, logs in, schedules itself, audits performance, remembers state across runs. |
+| **`server`** | Persistent server mode — stays online and waits for instructions via Telegram. Start tasks remotely from your phone.                              |
+| **`run`**    | Execute `.flow` test files — plain-English E2E tests with screenshots and HTML reports                                                         |
 
 ---
 
@@ -78,6 +79,18 @@ npx slapify task "..." --debug             # verbose logs
 npx slapify task "..." --save-flow         # save steps as a reusable .flow file
 npx slapify task "..." --max-iterations N  # cap agent loop iterations (default 400)
 npx slapify task "..." --schema <json> --output <file>  # structured JSON output (see below)
+```
+
+### Server Mode (`slapify server`)
+
+Run Slapify as a persistent background process that you control remotely via Telegram.
+
+```bash
+# Start the server (waits for Telegram commands)
+npx slapify server
+
+# With visible browser and debug logs
+npx slapify server --headed --debug
 ```
 
 **Structured output (JSON schema)** — Have the agent write data that matches a schema to a file. Use `--schema` (inline JSON or path to a `.json` file) and `--output` (file path). The agent uses a `write_output` tool to append or update the file whenever it has new data — ideal for recurring tasks that keep updating a report.
@@ -537,8 +550,9 @@ When the Slapify agent hits an obstacle, it will seamlessly fall back to using y
 ### Telegram Integration
 Add a `telegram` block to your config. The agent will:
 1. Message you when long-running background tasks start and finish.
-2. Ping you via Telegram when it gets stuck or needs a 2FA code (instead of waiting at the CLI).
-3. **Listen for instructions:** You can text the bot mid-run ("Hey, don't click that button, go try the other flow instead") and it will process your instruction live!
+2. Ping you via Telegram when it gets stuck or needs a 2FA code (instead of waiting at the CLI). You can reply directly in the chat!
+3. **Listen for instructions:** You can text the bot mid-run ("Hey, don't click that button") and it will process your instruction live.
+4. **Remote Activation:** Use the `/task` command (e.g. `/task Buy more coffee`) to start a new mission from your phone anytime while the server is running.
 
 ---
 

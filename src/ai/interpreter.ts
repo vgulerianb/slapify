@@ -39,6 +39,7 @@ export function getModel(
             }
           }
           const response = await fetch(url, options);
+          const responseClone = response.clone();
 
           if (response.headers.get("content-type")?.includes("application/json")) {
             try {
@@ -91,7 +92,7 @@ export function getModel(
               if (process.env.SLAPIFY_DEBUG_AI) {
                 console.log("[DEBUG] Could not read or scrub response text:", e);
               }
-              return response;
+              return responseClone; // Return the clone if an error occurs after consuming the original response
             }
           }
 

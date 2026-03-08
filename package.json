@@ -1,6 +1,6 @@
 {
   "name": "slapify",
-  "version": "0.0.21",
+  "version": "0.0.22",
   "description": "AI-powered browser automation — autonomous task agent, performance auditing, and E2E test flows in plain English",
   "type": "module",
   "main": "dist/index.js",

@@ -1,5 +1,6 @@
 import fs from "fs";
 import path from "path";
+import chalk from "chalk";
 import { generateText } from "ai";
 import cron from "node-cron";
 import { createSession as createWreqSession } from "wreq-js";
@@ -1094,6 +1095,9 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
     timeout: config.browser?.timeout,
     viewport: config.browser?.viewport,
     executablePath: executablePath || config.browser?.executablePath,
+    profile: config.browser?.profile,
+    userAgent: config.browser?.userAgent,
+    args: config.browser?.args,
   });
 
   // Set up or resume session
@@ -1134,6 +1138,11 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
     emit({ type: "message", text: `Session ${session.id} started` });
   }
 
+  // Attach telegram instance to session for external access if needed (e.g. CLI input racer)
+  if (telegram) {
+    (session as any)._telegramInstance = telegram;
+  }
+
   // Notify caller of session so they can reference it for SIGINT handling
   onSessionUpdate?.(session);
 
@@ -1154,11 +1163,15 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
     question: string,
     hint?: string
   ): Promise<string> => {
+    // If CLI input is not explicitly defined via options, race stdin against telegram
+
+    // 1. Setup CLI promise
     const rl = (await import("readline")).createInterface({
       input: process.stdin,
       output: process.stdout,
     });
-    return new Promise((resolve) => {
+
+    const cliPromise = new Promise<string>((resolve) => {
       const prompt = hint
         ? `\n  ${question}\n  (${hint})\n  > `
         : `\n  ${question}\n  > `;
@@ -1167,6 +1180,29 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
         resolve(answer.trim());
       });
     });
+
+    // 2. Setup Telegram Promise (if active)
+    if (telegram) {
+      let tgResolved = false;
+      const tgPromise = telegram.waitForReply().then((res: string) => {
+        tgResolved = true;
+        return res;
+      });
+      const winner = await Promise.race([cliPromise, tgPromise]);
+
+      // Cleanup the loser
+      if (tgResolved) {
+        // Telegram won, close the CLI readline cleanly (hack: send newline to unblock)
+        rl.write("\n");
+        rl.close();
+      } else {
+        // CLI won, cancel the telegram listener
+        telegram.cancelWaitForReply();
+      }
+      return winner;
+    }
+
+    return cliPromise;
   };
 
   const humanInputHandler = options.onHumanInput ?? defaultHumanInput;
@@ -1297,18 +1333,21 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
           break; // Success
         } catch (error: any) {
           const errorMsg = error?.message || String(error);
-
+          const lowMsg = errorMsg.toLowerCase();
           // Detect provider-level failures that warrant trying the next model:
           // rate limits (429), payment required (402), auth errors (401/403), quota exhausted
           const isProviderFailure =
-            errorMsg.includes("Too Many Requests") ||
-            errorMsg.includes("429") ||
-            errorMsg.includes("402") ||
-            errorMsg.includes("Payment Required") ||
-            errorMsg.includes("401") ||
-            errorMsg.includes("403") ||
-            errorMsg.includes("quota") ||
-            errorMsg.includes("billing");
+            lowMsg.includes("too many requests") ||
+            lowMsg.includes("429") ||
+            lowMsg.includes("402") ||
+            lowMsg.includes("payment required") ||
+            lowMsg.includes("401") ||
+            lowMsg.includes("403") ||
+            lowMsg.includes("quota") ||
+            lowMsg.includes("exhausted") ||
+            lowMsg.includes("overloaded") ||
+            lowMsg.includes("rate limit") ||
+            lowMsg.includes("billing");
 
           if (isProviderFailure) {
             const currentLabel = llmConfigs[modelIndex].label ||
@@ -1450,6 +1489,18 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
         }
 
         emit({ type: "tool_start", toolName, args });
+        if (!process.env.SLAPIFY_DEBUG_AI) {
+          // Provide visible feedback even without full debug mode
+          process.stdout.write(chalk.dim(`  🔧 ${toolName}...\r`));
+        }
+
+        if (toolName === "ask_user" && telegram) {
+          await telegram.sendMessage(`❓ *Agent asks*:\n${args.question}`);
+        }
+
+        if (toolName === "status_update" && telegram) {
+          await telegram.sendMessage(`ℹ️ *Status update*:\n${args.message}`);
+        }
 
         let toolResult: unknown;
         try {
@@ -1481,15 +1532,7 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
             }
           }
 
-          if (toolName === "ask_user" && telegram) {
-            const r = toolResult as Record<string, unknown>;
-            await telegram.sendMessage(`❓ *Agent asks*:\n${r.question}`);
-          }
 
-          if (toolName === "status_update" && telegram) {
-            const r = toolResult as Record<string, unknown>;
-            await telegram.sendMessage(`ℹ️ *Status update*:\n${r.message}`);
-          }
 
           // Trim the result before storing in conversation history to avoid
           // accumulating stale page snapshots and giant API bodies across turns.

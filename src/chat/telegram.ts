@@ -12,6 +12,7 @@ export class TelegramService {
     private isPolling = false;
     private messageQueue: string[] = [];
     private activeChatId?: number; // Where to send replies
+    private pendingAskResolver?: (msg: string) => void;
 
     constructor(config: TelegramConfig) {
         this.botToken = config.bot_token;
@@ -44,6 +45,22 @@ export class TelegramService {
         const messages = [...this.messageQueue];
         this.messageQueue = [];
         return messages;
+    }
+
+    /**
+     * Wait for a single reply from the user (used for ask_user prompts).
+     */
+    waitForReply(): Promise<string> {
+        return new Promise((resolve) => {
+            this.pendingAskResolver = resolve;
+        });
+    }
+
+    /**
+     * Cancel an active wait (e.g., if CLI input won the race).
+     */
+    cancelWaitForReply(): void {
+        this.pendingAskResolver = undefined;
     }
 
     /**
@@ -109,8 +126,23 @@ export class TelegramService {
                         }
 
                         this.activeChatId = chatId;
-                        console.log(`\n💬 [Telegram] Received live instruction: "${msg.text}"`);
-                        this.messageQueue.push(msg.text.trim());
+
+                        if (msg.text) {
+                            if (this.pendingAskResolver) {
+                                console.log(`\n💬 [Telegram] Received reply: "${msg.text}"`);
+                                this.pendingAskResolver(msg.text.trim());
+                                this.pendingAskResolver = undefined;
+                            } else {
+                                const text = msg.text.trim();
+                                console.log(`\n💬 [Telegram] Received live instruction: "${text}"`);
+                                // If it starts with /task, we strip the command for the agent
+                                if (text.toLowerCase().startsWith('/task ')) {
+                                    this.messageQueue.push(text.slice(6));
+                                } else {
+                                    this.messageQueue.push(text);
+                                }
+                            }
+                        }
                     }
                 }
             } catch (err: any) {

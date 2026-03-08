@@ -77,7 +77,7 @@ const program = new Command();
 program
   .name("slapify")
   .description("AI-powered browser automation that slaps — run autonomous agents, audit performance, and write E2E tests in plain English")
-  .version("0.0.21", "-v, -V, --version");
+  .version("0.0.22", "-v, -V, --version");
 
 // Init command
 program
@@ -1561,6 +1561,37 @@ program
     prompt();
   });
 
+// ─── Server command ───────────────────────────────────────────────────────────
+
+program
+  .command("server")
+  .description(
+    "Run Slapify in server mode. The agent stays online and waits for instructions via Telegram.\n" +
+    "  Use this for long-running bots that you control remotely."
+  )
+  .option("--headed", "Show the browser window")
+  .option("--debug", "Show all tool calls and internal steps")
+  .option("--report", "Generate an HTML report after the server stops")
+  .action(async (options) => {
+    // We reuse the 'task' logic with a special passive goal
+    const serverGoal = "You are running in SERVER MODE. You are ALREADY connected to Telegram and this chat. " +
+      "Wait for the user to send you a new task or instruction. " +
+      "When you receive a message, treat it as a new goal. " +
+      "Do NOT ask for Telegram credentials or tokens; they are already active. " +
+      "If no command is pending, you should simply wait or use the status_update() tool to say you are ready.";
+
+    // Inject any server-specific flags or defaults if needed
+    (program as any)._slapifyServerMode = true;
+
+    // Execute task logic
+    await program.commands.find(c => (c as any)._name === 'task')!.parseAsync([
+      serverGoal,
+      ...(options.headed ? ['--headed'] : []),
+      ...(options.debug ? ['--debug'] : []),
+      ...(options.report ? ['--report'] : [])
+    ], { from: 'user' });
+  });
+
 // ─── Task command ─────────────────────────────────────────────────────────────
 
 program
@@ -1948,12 +1979,33 @@ program
             output: process.stdout,
             terminal: true,
           });
-          const answer = await new Promise<string>((resolve) => {
+          const cliPromise = new Promise<string>((resolve) => {
             rl.question(`  ${chalk.cyan("›")} `, (ans) => {
               rl.close();
               resolve(ans.trim());
             });
           });
+
+          let answer: string;
+          let tgResolved = false;
+          const tgService = (activeSession as any)?._telegramInstance;
+
+          if (tgService) {
+            const tgPromise = tgService.waitForReply().then((res: string) => {
+              tgResolved = true;
+              return res;
+            });
+            answer = await Promise.race([cliPromise, tgPromise]);
+
+            if (tgResolved) {
+              rl.write("\n"); // unblock readline
+              rl.close();
+            } else {
+              tgService.cancelWaitForReply();
+            }
+          } else {
+            answer = await cliPromise;
+          }
 
           console.log(chalk.yellow("─".repeat(60)) + "\n");
 
