@@ -69,8 +69,10 @@ export function loadConfig(configDir?: string): SlapifyConfig {
   const resolved = replaceEnvVars(config) as SlapifyConfig;
 
   // Apply defaults
-  return {
+  const normalized: SlapifyConfig = {
     ...resolved,
+    // Normalize llm to always be an array for fallback chain support
+    llm: Array.isArray(resolved.llm) ? resolved.llm : [resolved.llm],
     browser: {
       headless: true,
       timeout: 30000,
@@ -84,6 +86,15 @@ export function loadConfig(configDir?: string): SlapifyConfig {
       ...resolved.report,
     },
   };
+  return normalized;
+}
+
+/**
+ * Return the resolved .slapify config directory path, or null if not found.
+ * Exported so other modules (e.g. prompt builder) can discover user plugin files.
+ */
+export function loadConfigDir(): string | null {
+  return findConfigDir();
 }
 
 /**
@@ -193,8 +204,40 @@ export function initConfig(
 # You can change the provider and model anytime
 ${llmConfig}
 
-# Browser Settings
+# Browser Automation Settings
+browser:
+  headless: true
+  timeout: 30000        # max time per action (ms)
+  viewport:
+    width: 1280
+    height: 720
+  # Anti-Bot Stealth & Persistence
+  # profile: ".slapify/browser-profile"
+  # userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36..."
+  # args:
+  #   - "--disable-blink-features=AutomationControlled"
+  #   - "--no-sandbox"
 ${browserConfig}
+# To use Browserbase cloud browsers instead of local (stealth, scalable, no install):
+#   browser:
+#     browserbase:
+#       api_key: \${BROWSERBASE_API_KEY}
+#       project_id: \${BROWSERBASE_PROJECT_ID}   # optional
+
+# Custom User Plugins
+# Add your own markdown rules to the agent's system prompt
+# plugins:
+#   rules:
+#     - "rules/my-persona.md"
+#     - "rules/company-guidelines.md"
+#   tools:
+#     - "tools/custom-utils.js"
+
+# Live Telegram Chat Integration
+# Talk to your agent while it runs and let it ask you questions
+# telegram:
+#   bot_token: \${TELEGRAM_BOT_TOKEN}
+#   allowed_chat_id: \${TELEGRAM_CHAT_ID}  # optional: restrict who can talk to it
 
 # Report Settings
 report:

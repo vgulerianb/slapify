@@ -4,9 +4,10 @@ import { generateText } from "ai";
 import cron from "node-cron";
 import { createSession as createWreqSession } from "wreq-js";
 import { BrowserAgent } from "../browser/agent.js";
-import { loadConfig, loadCredentials } from "../config/loader.js";
+import { loadConfig, loadCredentials, loadConfigDir } from "../config/loader.js";
 import { getModel } from "../ai/interpreter.js";
 import { taskTools, TaskToolName } from "./tools.js";
+import { buildSystemPrompt } from "./prompt.js";
 import {
   createSession,
   loadSession,
@@ -21,177 +22,20 @@ import {
   ToolCallRecord,
 } from "./types.js";
 import { CredentialProfile } from "../types.js";
+import { TelegramService } from "../chat/telegram.js";
 
-const MAX_MESSAGES_BEFORE_COMPACT = 60;
+// Compact context when accumulated message text exceeds this character threshold.
+// Character-based is more accurate than message-count because tool results vary wildly in size.
+const MAX_CONTEXT_CHARS = 200_000;
 const COMPACT_KEEP_RECENT = 20;
 const DEFAULT_MAX_ITERATIONS = 400;
 
-// ─── System prompt ────────────────────────────────────────────────────────────
+// Max characters stored per tool result in conversation history.
+// Full results are still emitted for display; this only limits what the model sees in later turns.
+const HISTORY_RESULT_CHAR_LIMIT = 3_000;
 
-const SYSTEM_PROMPT = `You are Slapify Task Agent — a fully autonomous web agent. You decide the best approach for any task yourself.
-
-## Tools
-- **fetch_url(url)** — Direct HTTP GET, bypasses browser. No CAPTCHA. Instant. Use for APIs and data.
-- **navigate(url)** + **get_page_state()** — Browser navigation. get_page_state() returns all visible text and interactive refs.
-- **click(ref)**, **type(ref, text)**, **press(key)**, **scroll(direction)**, **wait(seconds)** — Browser interaction.
-- **list_credential_profiles()**, **inject_credentials(profile)**, **fill_login_form(profile)** — Authentication.
-- **remember(key, value)**, **recall(key)**, **list_memories()** — Persistent memory.
-- **schedule(cron, task)**, **sleep_until(datetime)** — Time-based control.
-- **perf_audit(url)** — Full performance audit for a URL. Automatically navigates to the page, then collects: scores (Performance/Accessibility/SEO/Best Practices 0-100), real-user metrics (FCP, LCP, CLS, TTFB), framework detection, re-render analysis with simulated interactions, and network analysis (resource sizes, API calls, long tasks).
-  You can call perf_audit multiple times with different URLs to compare pages — the report will show a side-by-side comparison table automatically.
-  Do NOT call navigate() before perf_audit — it handles navigation itself.
-  If the user asks to audit multiple pages on a domain (e.g. "check pricing and about on vercel.com"), also audit the root/home page (e.g. https://vercel.com/) unless they explicitly say to skip it.
-  When summarising results, use neutral section labels. Never write "Lighthouse", "React Scan", or any vendor tool name. Use: "Performance Scores", "Real User Metrics", "Lab Metrics", "Framework & Re-renders", "Interaction Tests", "Network & Runtime".
-  The result includes a "network" field with: totalRequests, totalKB, jsKB, apiCalls count, slowApiCalls (>500ms), failedApiCalls, longTasks count, totalBlockingMs, memoryMB, slowApis list, and heaviestResources list. Include these in your summary.
-- **done(summary)** — Signal task complete with full results.
-
-## How to approach any task
-
-**Step 1 — Plan before acting.** Decide: is this a data lookup, an interactive task, or an authenticated task?
-
-**Data lookup** (prices, news, weather, facts, rates):
-  Think: does a free public HTTP API exist for this? Most financial/data topics have open APIs.
-  Try fetch_url() on a likely API endpoint first — it returns data in <1s with no CAPTCHA or JS rendering issues.
-  If you find useful JSON, parse it and call done() immediately.
-  If no API works, navigate to a site and read get_page_state() — it contains all visible text.
-
-**Interactive task** (filling forms, clicking buttons, posting content):
-  Use the browser. Navigate → get_page_state() → interact using ref IDs from the snapshot.
-
-**Authenticated task** (anything requiring login):
-  1. Check memory for a saved thread_url or page_url — navigate directly there first.
-  2. Call get_page_state() — if the URL is the target site (not a login page), you are already logged in. Proceed.
-  3. Only if you see a login form: call list_credential_profiles() and use the best matching profile.
-  This avoids unnecessary re-login on every scheduled check-in.
-
-**Monitoring / ongoing task** — CRITICAL RULE:
-  Keywords: "monitor", "keep checking", "wait for reply", "keep me updated", "feel free to engage",
-  "notify when", "let me know when", "keep watching", "ongoing", "until X happens"
-
-  These tasks NEVER call done() on their own. The user stops them with Ctrl+C.
-  Correct flow (FIRST RUN — initial session):
-    1. Perform the first action (send message, check price, etc.)
-    2. IMMEDIATELY call remember() to store key context:
-       - remember("thread_url", "<exact URL of the conversation/page>")
-       - remember("last_message_sent", "<text of message you sent>")
-       - remember("monitoring_target", "<name of person/thing being monitored>")
-    3. Call status_update() to confirm what was done
-    4. Call schedule() with a sensible cron interval (e.g. every 5 min for messages, every hour for prices)
-    5. Do NOT call done() — the process stays alive, re-running at each cron interval
-
-  Correct flow (SCHEDULED CHECK-IN — sub-run spawned by cron):
-    1. Check memory for thread_url — navigate DIRECTLY there (do NOT start from homepage)
-    2. Check if you are already logged in by reading get_page_state(). If the URL is the target page, you ARE logged in.
-    3. Only log in if the page is a login form. Use list_credential_profiles() to find the right profile.
-    4. After navigating to the thread, read get_page_state() to find the latest messages
-    5. Compare with last_message_sent in memory — look for NEW messages from the other person
-    6. If there is a new message: respond naturally, then update remember("last_message_sent", ...) with your reply
-    7. If no new message: call status_update("No new reply from <person> yet. Checking again later.")
-    8. Call done() — the cron will re-run automatically. Do NOT call schedule() again.
-
-  Example — "send a message and monitor for reply":
-    FIRST RUN:
-      → Send message
-      → remember("thread_url", "https://www.linkedin.com/messaging/thread/...")
-      → remember("last_message_sent", "Hello Payal! 👋 How are you doing?")
-      → status_update("✉️ Message sent. Monitoring for reply every 5 minutes.")
-      → schedule("*/5 * * * *", "Check LinkedIn messages from Payal Sahu and respond if she replied")
-      [do NOT call done()]
-
-    SCHEDULED CHECK-IN:
-      → recall("thread_url") → navigate directly to that URL
-      → get_page_state() → find latest message in the thread
-      → if Target replied: type and send a response, remember("last_message_sent", ...)
-      → status_update("✅ Target replied: '...' — responded with '...'" OR "No new reply yet.")
-      → done() [cron handles the next run]
-
-**Recurring task** ("every day", "check hourly", "daily at 9am"):
-  Execute once, then call schedule() with the cron expression you choose. Don't call done().
-
-## Handling obstacles — figure it out
-
-**CAPTCHA in browser:**
-  → First try fetch_url() on the same URL or a different source — direct HTTP never triggers CAPTCHA.
-  → If you must solve it in the browser: call get_page_state() to inspect the CAPTCHA. Look for an iframe or checkbox element. For reCAPTCHA v2, find and click the "I'm not a robot" checkbox ref. For image CAPTCHAs, look for the audio challenge link.
-  → If one site gives CAPTCHA, try a completely different site with the same data.
-
-**"Just a moment..." / Cloudflare:**
-  → Bot protection. Switch to fetch_url() on that URL, or find a different site entirely.
-
-**Empty page snapshot / "no interactive elements":**
-  → JS-rendered page. Call wait(3) then get_page_state() again.
-  → Still empty? Try fetch_url() on the same URL — the raw HTML often has the data even when browser rendering fails.
-
-**API returns error / bad format:**
-  → Try a different endpoint. Think what other public data sources exist for this topic.
-
-**Stuck after multiple attempts:**
-  → Change strategy completely. If browser isn't working, use fetch_url(). If one site fails, try another.
-  → Never repeat the same failing action more than twice.
-  -> Make sure to not guess URLs unless you are 100% sure about it, prefer navigating by clicking on available options.
-
-## Batching tool calls — reduce round trips
-
-You can return **multiple tool calls in a single response** when they don't depend on each other's output.
-This is faster — all calls in one response execute in parallel before the next LLM turn.
-
-**Good batching examples:**
-- After a snapshot you already have refs → batch: type(emailRef, ...) + type(passwordRef, ...) + click(submitRef)
-- Memory + notification → batch: remember(key, val) + status_update(msg)
-- Click then wait → batch: click(ref) + wait(2)  (wait does not need click result)
-- Multiple remembers → batch: remember(k1, v1) + remember(k2, v2) + remember(k3, v3)
-
-**Do NOT batch when the second call needs the first call's output:**
-- navigate + click → you need get_page_state() in between to learn the ref
-- get_page_state + click → click ref comes FROM get_page_state result
-
-**Login form shortcut** — once you have refs from a snapshot, fill the whole form in ONE response:
-  type(emailRef, email) + type(passwordRef, password) + click(submitRef)
-  Then in the NEXT response: wait(3) + get_page_state() to verify.
-
-## Reading data
-
-- get_page_state() snapshot contains ALL visible text: prices, numbers, paragraphs, labels. Read it carefully before giving up.
-- Do NOT use screenshot() for data extraction — you cannot see images.
-- Always call get_page_state() after every navigate().
-
-## Human in the loop
-
-Use **ask_user(question, hint?)** when you genuinely need information not available elsewhere:
-- A one-time password (OTP) or 2FA code
-- A missing password or PIN that isn't in the credential store
-- Clarification about what the user wants when the goal is ambiguous
-- Confirmation before taking a destructive or irreversible action
-
-Keep questions concise. Use the hint field to tell them where to find the answer (e.g. "Check your authenticator app").
-
-**MANDATORY after every successful login:**
-1. Call save_credentials with capture_from_browser: true immediately after you verify the login worked.
-   Use a sensible profile_name (e.g. "linkedin", "gmail", "twitter").
-   This saves the session cookies so they can be reused next time without logging in again.
-2. Then call status_update("✅ Logged in as [username]. Session saved as '[profile_name]' for future use.")
-
-Do not ask the user whether to save — just save automatically. If the site was already logged in via injected credentials, skip this step.
-
-## Keeping the user informed
-
-Use **status_update(message)** to post visible updates whenever something meaningful happens:
-- When starting a scheduled check: "⏰ Running scheduled gold price check..."
-- When you find data: "📊 Found gold price: $4,986/oz"
-- When retrying or switching approach: "🔄 Switching to Yahoo Finance..."
-- When sleeping: "😴 Waiting 30 minutes before next check. Last price: $4,986/oz"
-- For recurring tasks: post a status_update at the start and end of each run
-
-Do NOT use status_update for every small step — only for things the user would actually want to see.
-
-## Completion rules
-- Use remember() the moment you find important data, before calling done().
-- Call done() with a complete, specific summary including exact data found.
-- Never give up without trying at least 4-5 different approaches.
-- Never ask the user for help — figure it out.
-- **NEVER call done() if the task involves monitoring, waiting for replies, or ongoing engagement.**
-  Those tasks end only when the user presses Ctrl+C. Use schedule() instead.
-`;
+// System prompt is now built dynamically per-task by `src/task/prompt.ts`
+// using modular rule fragments from `src/task/rules/`.
 
 // ─── Parse sleep duration ─────────────────────────────────────────────────────
 
@@ -243,18 +87,40 @@ class ToolExecutor {
   // Shared across all fetch_url calls within one task run so cookies are maintained
   private wreqSession: Awaited<ReturnType<typeof createWreqSession>> | null =
     null;
+  private browser: BrowserAgent;
+  private session: TaskSession;
+  private credentials: Record<string, CredentialProfile>;
+  private emit: (event: TaskEvent) => void;
+  private onHumanInput: (q: string, hint?: string) => Promise<string>;
+  private credentialsFilePath: string;
+  private isScheduledRun: boolean;
+  private schema?: Record<string, unknown>;
+  private outputFile?: string;
+  private customTools: Record<string, any>;
 
   constructor(
-    private browser: BrowserAgent,
-    private session: TaskSession,
-    private credentials: Record<string, CredentialProfile>,
-    private emit: (event: TaskEvent) => void,
-    private onHumanInput: (q: string, hint?: string) => Promise<string>,
-    private credentialsFilePath: string,
-    private isScheduledRun: boolean = false,
-    private schema?: Record<string, unknown>,
-    private outputFile?: string
-  ) {}
+    browser: BrowserAgent,
+    session: TaskSession,
+    credentials: Record<string, CredentialProfile>,
+    emit: (event: TaskEvent) => void,
+    onHumanInput: (question: string, hint?: string) => Promise<string>,
+    credentialsFilePath: string,
+    isScheduledRun: boolean = false,
+    schema?: Record<string, unknown>,
+    outputFile?: string,
+    customTools?: Record<string, any>
+  ) {
+    this.browser = browser;
+    this.session = session;
+    this.credentials = credentials;
+    this.emit = emit;
+    this.onHumanInput = onHumanInput;
+    this.credentialsFilePath = credentialsFilePath;
+    this.isScheduledRun = isScheduledRun;
+    this.schema = schema;
+    this.outputFile = outputFile;
+    this.customTools = customTools || {};
+  }
 
   private async getWreqSession() {
     if (!this.wreqSession) {
@@ -270,7 +136,7 @@ class ToolExecutor {
     if (this.wreqSession) {
       try {
         await this.wreqSession.close();
-      } catch {}
+      } catch { }
       this.wreqSession = null;
     }
   }
@@ -289,11 +155,11 @@ class ToolExecutor {
         try {
           await this.browser.evaluate(
             `(function(){` +
-              `document.querySelectorAll('a[target="_blank"]').forEach(function(a){a.setAttribute('target','_self');});` +
-              `if(!window.__slapifyPatched){window.__slapifyPatched=true;` +
-              `var _orig=window.open;window.open=function(url,name,features){if(url&&String(url).startsWith('http')){window.location.href=url;return window;}return _orig.apply(this,arguments);};` +
-              `}` +
-              `})()`
+            `document.querySelectorAll('a[target="_blank"]').forEach(function(a){a.setAttribute('target','_self');});` +
+            `if(!window.__slapifyPatched){window.__slapifyPatched=true;` +
+            `var _orig=window.open;window.open=function(url,name,features){if(url&&String(url).startsWith('http')){window.location.href=url;return window;}return _orig.apply(this,arguments);};` +
+            `}` +
+            `})()`
           );
         } catch {
           // Non-fatal
@@ -318,13 +184,13 @@ class ToolExecutor {
         try {
           await this.browser.evaluate(
             `(function(){` +
-              // Rewrite all target="_blank" links to open in the same tab
-              `document.querySelectorAll('a[target="_blank"]').forEach(function(a){a.setAttribute('target','_self');});` +
-              // Override window.open so JS-driven popups navigate instead
-              `if(!window.__slapifyPatched){window.__slapifyPatched=true;` +
-              `var _orig=window.open;window.open=function(url,name,features){if(url&&String(url).startsWith('http')){window.location.href=url;return window;}return _orig.apply(this,arguments);};` +
-              `}` +
-              `})()`
+            // Rewrite all target="_blank" links to open in the same tab
+            `document.querySelectorAll('a[target="_blank"]').forEach(function(a){a.setAttribute('target','_self');});` +
+            // Override window.open so JS-driven popups navigate instead
+            `if(!window.__slapifyPatched){window.__slapifyPatched=true;` +
+            `var _orig=window.open;window.open=function(url,name,features){if(url&&String(url).startsWith('http')){window.location.href=url;return window;}return _orig.apply(this,arguments);};` +
+            `}` +
+            `})()`
           );
         } catch {
           // Non-fatal — some pages block eval via CSP; proceed anyway
@@ -632,7 +498,7 @@ class ToolExecutor {
                     fs.readFileSync(this.credentialsFilePath, "utf-8")
                   );
                   if (parsed?.profiles) existing = parsed;
-                } catch {}
+                } catch { }
               }
               existing.profiles[profileName] = profile;
               fs.mkdirSync(path.dirname(this.credentialsFilePath), {
@@ -648,7 +514,7 @@ class ToolExecutor {
                 profileName,
                 credType: "login-form",
               });
-            } catch {}
+            } catch { }
           }
         }
 
@@ -715,7 +581,7 @@ class ToolExecutor {
                 fs.readFileSync(this.credentialsFilePath, "utf-8")
               );
               if (parsed?.profiles) existing = parsed;
-            } catch {}
+            } catch { }
           }
           existing.profiles[profileName] = profile;
           fs.mkdirSync(path.dirname(this.credentialsFilePath), {
@@ -778,29 +644,29 @@ class ToolExecutor {
             react: result.react,
             network: net
               ? {
-                  totalRequests: net.totalRequests,
-                  totalKB: Math.round((net.totalBytes || 0) / 1024),
-                  jsKB: Math.round((net.jsBytes || 0) / 1024),
-                  apiCalls: net.apiCalls.length,
-                  slowApiCalls: net.slowApiCalls.length,
-                  failedApiCalls: net.failedApiCalls.length,
-                  longTasks: net.longTasks.length,
-                  totalBlockingMs: net.totalBlockingMs,
-                  memoryMB: net.memoryMB,
-                  slowApis: net.slowApiCalls.slice(0, 5).map((r) => ({
-                    url: r.url.length > 80 ? "…" + r.url.slice(-80) : r.url,
-                    method: r.method,
-                    status: r.status,
-                    durationMs: r.duration,
+                totalRequests: net.totalRequests,
+                totalKB: Math.round((net.totalBytes || 0) / 1024),
+                jsKB: Math.round((net.jsBytes || 0) / 1024),
+                apiCalls: net.apiCalls.length,
+                slowApiCalls: net.slowApiCalls.length,
+                failedApiCalls: net.failedApiCalls.length,
+                longTasks: net.longTasks.length,
+                totalBlockingMs: net.totalBlockingMs,
+                memoryMB: net.memoryMB,
+                slowApis: net.slowApiCalls.slice(0, 5).map((r) => ({
+                  url: r.url.length > 80 ? "…" + r.url.slice(-80) : r.url,
+                  method: r.method,
+                  status: r.status,
+                  durationMs: r.duration,
+                })),
+                heaviestResources: net.heaviestResources
+                  .slice(0, 5)
+                  .map((r) => ({
+                    url: r.url.split("/").slice(-2).join("/"),
+                    type: r.type,
+                    sizeKB: Math.round(r.size / 1024),
                   })),
-                  heaviestResources: net.heaviestResources
-                    .slice(0, 5)
-                    .map((r) => ({
-                      url: r.url.split("/").slice(-2).join("/"),
-                      type: r.type,
-                      sizeKB: Math.round(r.size / 1024),
-                    })),
-                }
+              }
               : null,
           };
 
@@ -821,12 +687,10 @@ class ToolExecutor {
             const interactions = result.react.interactionTests ?? [];
             const flagged = interactions.filter((t) => t.flagged).length;
             lines.push(
-              `Framework: ${fw || "React"} · Re-render issues: ${
-                result.react.issues.length
-              }${
-                interactions.length
-                  ? ` · Interaction tests: ${interactions.length} (${flagged} flagged)`
-                  : ""
+              `Framework: ${fw || "React"} · Re-render issues: ${result.react.issues.length
+              }${interactions.length
+                ? ` · Interaction tests: ${interactions.length} (${flagged} flagged)`
+                : ""
               }`
             );
           }
@@ -834,16 +698,13 @@ class ToolExecutor {
             lines.push(
               `Network: ${net.totalRequests} requests · ${Math.round(
                 (net.totalBytes || 0) / 1024
-              )}KB total · JS ${Math.round((net.jsBytes || 0) / 1024)}KB · ${
-                net.apiCalls.length
-              } API calls${
-                net.slowApiCalls.length
-                  ? ` (${net.slowApiCalls.length} slow)`
-                  : ""
-              }${
-                net.failedApiCalls.length
-                  ? ` (${net.failedApiCalls.length} failed)`
-                  : ""
+              )}KB total · JS ${Math.round((net.jsBytes || 0) / 1024)}KB · ${net.apiCalls.length
+              } API calls${net.slowApiCalls.length
+                ? ` (${net.slowApiCalls.length} slow)`
+                : ""
+              }${net.failedApiCalls.length
+                ? ` (${net.failedApiCalls.length} failed)`
+                : ""
               } · ${net.longTasks.length} long tasks (${net.totalBlockingMs}ms)`
             );
           }
@@ -944,6 +805,16 @@ class ToolExecutor {
       }
 
       default:
+        // Attempt to execute as a custom user tool if present
+        if (this.customTools && this.customTools[toolName] && typeof this.customTools[toolName].execute === "function") {
+          try {
+            // Call the Vercel AI SDK execute() function attached to the tool
+            const res = await this.customTools[toolName].execute(args, { toolCallId: "custom" });
+            return res;
+          } catch (e: any) {
+            return { ok: false, error: `Custom tool '${toolName}' failed: ${e.message}` };
+          }
+        }
         return { ok: false, error: `Unknown tool: ${toolName}` };
     }
   }
@@ -962,14 +833,14 @@ class ToolExecutor {
       for (const [k, v] of Object.entries(profile.localStorage)) {
         try {
           await this.browser.setLocalStorage(k, v);
-        } catch {}
+        } catch { }
       }
     }
     if (profile.sessionStorage) {
       for (const [k, v] of Object.entries(profile.sessionStorage)) {
         try {
           await this.browser.setSessionStorage(k, v);
-        } catch {}
+        } catch { }
       }
     }
   }
@@ -1031,6 +902,42 @@ function writeStructuredOutput(
   return next;
 }
 
+// ─── Tool result history trimming ────────────────────────────────────────────
+
+/**
+ * Trim a tool result before it gets pushed into conversation history.
+ *
+ * Two sources of bloat we address here:
+ * 1. `get_page_state` returns a large DOM snapshot every time. Stale snapshots
+ *    sitting in history from 5+ turns ago waste tokens. We strip the snapshot
+ *    content but keep a breadcrumb so the model knows a page was visited.
+ * 2. Large bodies (fetch_url HTML/JSON) are cap-truncated to HISTORY_RESULT_CHAR_LIMIT
+ *    chars. The model already saw the full result in the current turn.
+ */
+function trimToolResultForHistory(
+  toolName: string,
+  result: unknown
+): unknown {
+  if (toolName === "get_page_state") {
+    // Keep the URL and title so the model knows where it was, but drop the
+    // giant snapshot string — the model will call get_page_state() again if needed.
+    const r = result as Record<string, unknown>;
+    return {
+      url: r.url,
+      title: r.title,
+      snapshot: "[snapshot omitted from history — call get_page_state() again if needed]",
+      refsCount: r.refsCount,
+    };
+  }
+
+  // For everything else, serialise and cap the size
+  const str = typeof result === "string" ? result : JSON.stringify(result);
+  if (str.length > HISTORY_RESULT_CHAR_LIMIT) {
+    return str.slice(0, HISTORY_RESULT_CHAR_LIMIT) + `…[truncated in history, was ${str.length} chars]`;
+  }
+  return result;
+}
+
 // ─── Context compaction ───────────────────────────────────────────────────────
 
 async function compactMessages(
@@ -1063,10 +970,17 @@ async function compactMessages(
       ts: new Date().toISOString(),
     });
 
+    // Inject the summary as a structured user message that clearly signals it's
+    // a history digest, not a new user instruction. This is semantically clearer
+    // than a bare user message and avoids the model treating it as a new goal.
     return [
       {
         role: "user",
-        content: `[Session history summary]\n${summary}`,
+        content: `[Context Summary — earlier conversation compacted to save tokens]\n${summary}`,
+      },
+      {
+        role: "assistant",
+        content: "Understood. I will continue from this summary.",
       },
       ...recent,
     ];
@@ -1089,11 +1003,12 @@ const LOOP_EXEMPT_TOOLS = new Set([
   "list_credential_profiles",
   "go_back",
   "reload",
-  "fetch_url",
   "solve_captcha",
   "status_update",
   "ask_user",
   "save_credentials",
+  // NOTE: fetch_url intentionally NOT exempt — calling the same URL+args
+  // repeatedly is a real loop that should be caught and interrupted.
 ]);
 
 class LoopDetector {
@@ -1144,7 +1059,13 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
 
   // Load config and credentials
   const config = loadConfig();
-  const model = getModel(config.llm);
+  const configDir = loadConfigDir() || process.cwd();
+  // LLM fallback chain: config.llm is always an array after normalization in loadConfig.
+  // We start with index 0 and advance to the next model on provider errors.
+  const llmConfigs = Array.isArray(config.llm) ? config.llm : [config.llm];
+  let modelIndex = 0;
+  const getActiveModel = () => getModel(llmConfigs[modelIndex]);
+  let model = getActiveModel();
   let credentials: Record<string, CredentialProfile> = {};
   try {
     const creds = loadCredentials();
@@ -1153,14 +1074,23 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
     // No credentials file is fine
   }
 
+  // Init Telegram live interaction if configured
+  let telegram: TelegramService | undefined;
+  if (config.telegram?.bot_token) {
+    telegram = new TelegramService(config.telegram);
+    telegram.start();
+    // Fire-and-forget an intro message
+    telegram.sendMessage(`🚀 *Slapify Task Started*\n\nGoal: _${goal}_`).catch(() => { });
+  }
+
   // Set up browser
   const browser = new BrowserAgent({
     headless:
       headed === true
         ? false
         : headed === false
-        ? true
-        : config.browser?.headless ?? true,
+          ? true
+          : config.browser?.headless ?? true,
     timeout: config.browser?.timeout,
     viewport: config.browser?.viewport,
     executablePath: executablePath || config.browser?.executablePath,
@@ -1217,7 +1147,7 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
     const { getConfigDir } = await import("../config/loader.js");
     const cfgDir = getConfigDir();
     if (cfgDir) credentialsFilePath = path.join(cfgDir, "credentials.yaml");
-  } catch {}
+  } catch { }
 
   // Default human input handler — reads from stdin (CLI overrides this via onHumanInput option)
   const defaultHumanInput = async (
@@ -1241,6 +1171,29 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
 
   const humanInputHandler = options.onHumanInput ?? defaultHumanInput;
 
+  // Load custom user tools dynamically
+  const customTools: Record<string, any> = {};
+  if (config.plugins?.tools && configDir) {
+    const urlConfig = await import("url");
+    for (const toolPath of config.plugins.tools) {
+      try {
+        const absolutePath = path.resolve(configDir, toolPath);
+        const fileUrl = urlConfig.pathToFileURL(absolutePath).href;
+        const exported = await import(fileUrl);
+        for (const [key, val] of Object.entries(exported)) {
+          // Crude check if it's a Vercel AI SDK tool (has parameters and an execute function)
+          if (val && typeof val === "object" && "parameters" in val && "execute" in val) {
+            customTools[key] = val;
+          }
+        }
+      } catch (err: any) {
+        console.error(`\n⚠️ [Slapify] Warning: Failed to load user tool file "${toolPath}": ${err.message}\n`);
+      }
+    }
+  }
+
+  const mergedTools = { ...taskTools, ...customTools };
+
   const executor = new ToolExecutor(
     browser,
     session,
@@ -1250,7 +1203,8 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
     credentialsFilePath,
     isScheduledRun,
     schema,
-    outputFile
+    outputFile,
+    customTools
   );
   const loopDetector = new LoopDetector();
 
@@ -1303,31 +1257,90 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
         ts: new Date().toISOString(),
       });
 
-      // Compact context if it's getting large
-      if (messages.length > MAX_MESSAGES_BEFORE_COMPACT) {
-        emit({ type: "message", text: "Compacting context..." });
+      // Compact context when it grows too large (character-based, not message-count-based).
+      // This is more accurate because tool results vary wildly in size — one huge fetch_url
+      // response can dwarf 10 normal messages.
+      const contextSize = JSON.stringify(messages).length;
+      if (contextSize > MAX_CONTEXT_CHARS) {
+        emit({ type: "message", text: `Compacting context (${Math.round(contextSize / 1000)}k chars)...` });
         messages = await compactMessages(messages, model, session.id);
+      }
+
+      // ── LIVE TELEGRAM INSTRUCTIONS ───────────────────────────────────────
+      if (telegram) {
+        const liveMsgs = telegram.popMessages();
+        if (liveMsgs.length > 0) {
+          const liveText = liveMsgs.join("\n\n");
+          emit({ type: "message", text: `Injecting live instruction from Telegram: "${liveText.slice(0, 50)}..."` });
+          messages.push({
+            role: "user",
+            content: `[LIVE INSTRUCTION FROM USER VIA TELEGRAM]\nThe user just sent the following message while you were running. You MUST read this and adjust your current plan accordingly:\n\n${liveText}`,
+          });
+        }
       }
 
       emit({ type: "thinking" });
 
-      // Build per-run system prompt, appending schema instructions if provided
-      const systemPrompt = schema
-        ? SYSTEM_PROMPT +
-          `\n\n## Structured Output Schema\nThe user expects output that conforms to this JSON schema:\n\`\`\`json\n${JSON.stringify(
-            schema,
-            null,
-            2
-          )}\n\`\`\`\nUse the **write_output** tool to write conforming data whenever you have results to record (after each scheduled run, after collecting data, or before calling done). For array schemas, each write_output call appends new entries. For object schemas, each call updates the object. Always call write_output before done() when a schema is provided.`
-        : SYSTEM_PROMPT;
+      // Build per-run system prompt dynamically from modular rule fragments
+      const systemPrompt = buildSystemPrompt(goal, schema, config.plugins, configDir);
 
       // ── THINK ──────────────────────────────────────────────────────────
-      const result = await generateText({
-        model,
-        system: systemPrompt,
-        messages: messages as Parameters<typeof generateText>[0]["messages"],
-        tools: taskTools,
-      });
+      let result;
+      while (true) {
+        try {
+          result = await generateText({
+            model,
+            system: systemPrompt,
+            messages: messages as Parameters<typeof generateText>[0]["messages"],
+            tools: mergedTools,
+          });
+          break; // Success
+        } catch (error: any) {
+          const errorMsg = error?.message || String(error);
+
+          // Detect provider-level failures that warrant trying the next model:
+          // rate limits (429), payment required (402), auth errors (401/403), quota exhausted
+          const isProviderFailure =
+            errorMsg.includes("Too Many Requests") ||
+            errorMsg.includes("429") ||
+            errorMsg.includes("402") ||
+            errorMsg.includes("Payment Required") ||
+            errorMsg.includes("401") ||
+            errorMsg.includes("403") ||
+            errorMsg.includes("quota") ||
+            errorMsg.includes("billing");
+
+          if (isProviderFailure) {
+            const currentLabel = llmConfigs[modelIndex].label ||
+              `${llmConfigs[modelIndex].provider}/${llmConfigs[modelIndex].model}`;
+
+            // Try the next model in the chain
+            if (modelIndex + 1 < llmConfigs.length) {
+              modelIndex++;
+              model = getActiveModel();
+              const nextLabel = llmConfigs[modelIndex].label ||
+                `${llmConfigs[modelIndex].provider}/${llmConfigs[modelIndex].model}`;
+              emit({
+                type: "message",
+                text: `⚠️ ${currentLabel} failed (${errorMsg.slice(0, 60)}). Switching to ${nextLabel}...`,
+              });
+              continue; // Retry the generateText with the new model
+            }
+
+            // All models exhausted — reset to first and sleep before retrying
+            modelIndex = 0;
+            model = getActiveModel();
+            emit({
+              type: "message",
+              text: `⚠️ All models failed. Sleeping 60s before retrying from the start of the chain...`,
+            });
+            await new Promise((resolve) => setTimeout(resolve, 60000));
+            continue;
+          }
+
+          throw error; // Any other error (network, parse, etc.) — propagate
+        }
+      }
 
       const toolCallRecords: ToolCallRecord[] = (result.toolCalls || []).map(
         (tc) => ({
@@ -1460,11 +1473,39 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
             result: resultStr.slice(0, 200),
           });
 
+          if (toolName === "done") {
+            isDone = true;
+            doneSummary = JSON.stringify(toolResult, null, 2);
+            if (telegram) {
+              await telegram.sendMessage(`✅ *Task Completed*\n\n\`\`\`json\n${doneSummary}\n\`\`\``);
+            }
+          }
+
+          if (toolName === "ask_user" && telegram) {
+            const r = toolResult as Record<string, unknown>;
+            await telegram.sendMessage(`❓ *Agent asks*:\n${r.question}`);
+          }
+
+          if (toolName === "status_update" && telegram) {
+            const r = toolResult as Record<string, unknown>;
+            await telegram.sendMessage(`ℹ️ *Status update*:\n${r.message}`);
+          }
+
+          // Trim the result before storing in conversation history to avoid
+          // accumulating stale page snapshots and giant API bodies across turns.
+          // The full result is still emitted for display — this only affects what
+          // the model sees in its next turn.
+          const resultForHistory = trimToolResultForHistory(toolName, toolResult);
+          const resultStrForHistory =
+            typeof resultForHistory === "string"
+              ? resultForHistory
+              : JSON.stringify(resultForHistory);
+
           toolResultContent.push({
             type: "tool-result",
             toolCallId: tc.toolCallId,
             toolName,
-            result: resultStr,
+            result: resultStrForHistory,
           });
         } catch (err: any) {
           const errorMsg = err?.message || String(err);
@@ -1519,14 +1560,18 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
     session.finalSummary = `Error: ${errorMsg}`;
     saveSessionMeta(session);
     emit({ type: "error", error: errorMsg });
+    if (telegram && !errorMsg.includes("User aborted")) {
+      telegram.sendMessage(`❌ *Task Failed*\n\nError: ${errorMsg}`).catch(() => { });
+    }
     throw err;
   } finally {
+    if (telegram) telegram.stop();
     try {
       browser.close();
-    } catch {}
+    } catch { }
     try {
       await executor.closeWreqSession();
-    } catch {}
+    } catch { }
   }
 
   return session;
@@ -1588,7 +1633,7 @@ async function startScheduledJobs(
   });
 
   // Keep process alive indefinitely for cron jobs
-  await new Promise<void>(() => {});
+  await new Promise<void>(() => { });
 }
 
 // ─── Flow file generation ─────────────────────────────────────────────────────

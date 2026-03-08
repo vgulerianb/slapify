@@ -1,8 +1,11 @@
 // Configuration types
 export interface SlapifyConfig {
-  llm: LLMConfig;
+  /** Single model or an ordered fallback chain (tried in order on failure). */
+  llm: LLMConfig | LLMConfig[];
   browser?: BrowserConfig;
   report?: ReportConfig;
+  plugins?: PluginsConfig;
+  telegram?: TelegramConfig;
 }
 
 export interface LLMConfig {
@@ -10,6 +13,29 @@ export interface LLMConfig {
   model: string;
   api_key?: string;
   base_url?: string;
+  /** Human-readable label shown in fallback logs, e.g. 'Claude (primary)' */
+  label?: string;
+}
+
+export interface PluginsConfig {
+  /**
+   * Paths to additional markdown rule files to always append to the system prompt.
+   * Supports glob patterns relative to the .slapify directory.
+   * Example: ["rules/my-persona.md", "rules/company-style.md"]
+   */
+  rules?: string[];
+  /**
+   * Paths to .js/.ts files exporting tools to merge with the agent's built-in tools.
+   * Each file must export an object containing Vercel AI SDK `tool()` definitions.
+   * Example: ["tools/custom-utils.js"]
+   */
+  tools?: string[];
+}
+
+export interface TelegramConfig {
+  bot_token: string;
+  /** Optional: only allow messages from this chat/user ID */
+  allowed_chat_id?: string | number;
 }
 
 export interface BrowserConfig {
@@ -20,6 +46,16 @@ export interface BrowserConfig {
     height: number;
   };
   executablePath?: string; // Path to Chrome/Chromium executable
+  /** Path to a persistent Chromium user-data-dir/profile (enables session saving) */
+  profile?: string;
+  /** Custom User-Agent string to bypass basic checks */
+  userAgent?: string;
+  /** Array of Chromium launch args (e.g. ['--disable-blink-features=AutomationControlled']) */
+  args?: string[];
+  browserbase?: {
+    api_key: string;
+    project_id?: string;
+  };
 }
 
 export interface ReportConfig {
@@ -86,13 +122,13 @@ export interface StepResult {
 
 export interface ActionLog {
   type:
-    | "navigate"
-    | "click"
-    | "fill"
-    | "verify"
-    | "wait"
-    | "auto-handle"
-    | "info";
+  | "navigate"
+  | "click"
+  | "fill"
+  | "verify"
+  | "wait"
+  | "auto-handle"
+  | "info";
   description: string;
   selector?: string;
   value?: string;

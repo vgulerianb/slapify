@@ -104,10 +104,11 @@ npx slapify task "Every day at 9am, collect top tech headlines and add to report
 | **Login automatically**   | Detects login forms, uses saved credential profiles, asks you to save new ones |
 | **Persistent memory**     | Stores key facts between runs (thread URLs, last-seen items, etc.)             |
 | **Schedule itself**       | Creates its own cron jobs for recurring subtasks                               |
-| **Ask for input**         | Pauses and prompts you when it needs information (e.g. OTP, confirmation)      |
+| **Ask for input**         | Pauses and prompts you via CLI or **Live Telegram Chat** when it needs info (e.g. OTP, conf)  |
 | **Performance audit**     | Scores, web vitals, network analysis, framework detection, re-render testing   |
 | **Structured output**     | Writes JSON conforming to a schema to a file (append/update per run)           |
 | **HTML report**           | Full session report with tool timeline, summaries, and perf data               |
+| **Custom Plugins**        | Load your own markdown rules or `.ts` tools directly into the agent's brain    |
 
 ### Programmatic (JS/TS)
 
@@ -455,6 +456,12 @@ In **task mode**, credentials are fully automatic:
 - If no profile matches, it asks you to enter credentials and offers to save them
 - Saved sessions are reused on future runs — no re-login needed
 
+### Persistent Browser Profiles (Anti-Bot)
+
+Instead of relying solely on `credentials.yaml`, you can configure the browser to use a persistent Chromium profile on disk. This saves everything natively: cookies, `localStorage`, `sessionStorage`, and cached 2FA tokens. It also helps evade bot detection since the browser builds up a real history.
+
+See the `browser.profile` setting in the Configuration section below.
+
 ---
 
 ## Configuration
@@ -462,10 +469,15 @@ In **task mode**, credentials are fully automatic:
 ### `.slapify/config.yaml`
 
 ```yaml
+# You can define an array of models! If the primary API drops/rate-limits, 
+# Slapify instantly falls back to the next model in the list.
 llm:
-  provider: anthropic
-  model: claude-haiku-4-5-20251001 # fast & cheap — recommended
-  api_key: ${ANTHROPIC_API_KEY}
+  - provider: anthropic
+    model: claude-3-7-sonnet-20250219 
+    api_key: ${ANTHROPIC_API_KEY}
+  - provider: openai
+    model: o3-mini
+    api_key: ${OPENAI_API_KEY}
 
 browser:
   headless: true
@@ -473,12 +485,60 @@ browser:
   viewport:
     width: 1280
     height: 720
+  # Anti-Bot Stealth & Persistence
+  profile: ".slapify/browser-profile"
+  userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+  args:
+    - "--disable-blink-features=AutomationControlled"
+    - "--no-sandbox"
 
 report:
   format: html
   screenshots: true
   output_dir: ./test-reports
+
+# Extend the agent with your own rules and Vercel AI SDK tools
+plugins:
+  rules:
+    - "rules/my-persona.md"
+  tools:
+    - "tools/query_database.ts"
+
+# Get live status updates and send instructions to the agent mid-run via Telegram
+telegram:
+  bot_token: ${TELEGRAM_BOT_TOKEN}
+  allowed_chat_id: 123456789
 ```
+
+---
+
+## Extensibility & Live Chat
+
+### Custom User Tools
+You can give Slapify access to your local system or database by exporting Vercel AI SDK `tool()` definitions from a `.ts` or `.js` file, and adding the path to `plugins.tools` in your config.
+
+```typescript
+// .slapify/tools/database.ts
+import { tool } from "ai";
+import { z } from "zod";
+
+export const queryProdDB = tool({
+  description: "Execute a secure read-only SQL query.",
+  parameters: z.object({ sql: z.string() }),
+  execute: async ({ sql }) => {
+    // Custom logic here...
+    return { rows: [{ id: 1 }] };
+  }
+});
+```
+
+When the Slapify agent hits an obstacle, it will seamlessly fall back to using your custom `queryProdDB` right alongside its native browser tools!
+
+### Telegram Integration
+Add a `telegram` block to your config. The agent will:
+1. Message you when long-running background tasks start and finish.
+2. Ping you via Telegram when it gets stuck or needs a 2FA code (instead of waiting at the CLI).
+3. **Listen for instructions:** You can text the bot mid-run ("Hey, don't click that button, go try the other flow instead") and it will process your instruction live!
 
 ---
 

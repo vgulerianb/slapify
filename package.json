@@ -1,6 +1,6 @@
 {
   "name": "slapify",
-  "version": "0.0.20",
+  "version": "0.0.21",
   "description": "AI-powered browser automation — autonomous task agent, performance auditing, and E2E test flows in plain English",
   "type": "module",
   "main": "dist/index.js",
@@ -11,10 +11,11 @@
   "files": [
     "dist/**/*.js",
     "dist/**/*.d.ts",
+    "dist/**/*.md",
     "bin"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && cp -r src/task/rules dist/task/rules",
     "dev": "tsc --watch",
     "start": "node dist/index.js",
     "lint": "tsc --noEmit",
@@ -51,7 +52,7 @@
     "@ai-sdk/mistral": "^1.0.0",
     "@ai-sdk/openai": "^0.0.30",
     "@types/node-cron": "^3.0.11",
-    "agent-browser": "^0.9.0",
+    "agent-browser": "^0.9.4",
     "ai": "^3.0.0",
     "chalk": "^5.3.0",
     "commander": "^12.0.0",

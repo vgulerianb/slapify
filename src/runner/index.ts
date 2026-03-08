@@ -30,7 +30,7 @@ export class TestRunner {
     this.config = config;
     this.credentials = credentials;
     this.browser = new BrowserAgent(config.browser);
-    this.ai = new AIInterpreter(config.llm);
+    this.ai = new AIInterpreter(Array.isArray(config.llm) ? config.llm[0] : config.llm);
   }
 
   /**
@@ -137,11 +137,11 @@ export class TestRunner {
       flowFile: flow.path || flow.name,
       status:
         failed === 0 ||
-        stepResults.every(
-          (r) =>
-            r.status !== "failed" ||
-            flow.steps[stepResults.indexOf(r)]?.optional
-        )
+          stepResults.every(
+            (r) =>
+              r.status !== "failed" ||
+              flow.steps[stepResults.indexOf(r)]?.optional
+          )
           ? "passed"
           : "failed",
       steps: stepResults,
@@ -569,9 +569,8 @@ export class TestRunner {
             // Log but continue - some cookies may fail due to domain restrictions
             actions.push({
               type: "info",
-              description: `⚠ Failed to set cookie: ${cookie.name} (${
-                error.message?.split("\n")[0] || "unknown error"
-              })`,
+              description: `⚠ Failed to set cookie: ${cookie.name} (${error.message?.split("\n")[0] || "unknown error"
+                })`,
               timestamp: Date.now(),
             });
             failCount++;
@@ -592,9 +591,8 @@ export class TestRunner {
           } catch (error: any) {
             actions.push({
               type: "info",
-              description: `⚠ Failed to set localStorage: ${key} (${
-                error.message?.split("\n")[0] || "unknown error"
-              })`,
+              description: `⚠ Failed to set localStorage: ${key} (${error.message?.split("\n")[0] || "unknown error"
+                })`,
               timestamp: Date.now(),
             });
             failCount++;
@@ -615,9 +613,8 @@ export class TestRunner {
           } catch (error: any) {
             actions.push({
               type: "info",
-              description: `⚠ Failed to set sessionStorage: ${key} (${
-                error.message?.split("\n")[0] || "unknown error"
-              })`,
+              description: `⚠ Failed to set sessionStorage: ${key} (${error.message?.split("\n")[0] || "unknown error"
+                })`,
               timestamp: Date.now(),
             });
             failCount++;
@@ -832,11 +829,9 @@ ${yaml.stringify(existingData, { indent: 2, lineWidth: 0 })}`;
 
     actions.push({
       type: "info",
-      description: `Captured ${cookies.length} cookies, ${
-        Object.keys(localStorage).length
-      } localStorage, ${
-        Object.keys(sessionStorage).length
-      } sessionStorage to temp_credentials.yaml`,
+      description: `Captured ${cookies.length} cookies, ${Object.keys(localStorage).length
+        } localStorage, ${Object.keys(sessionStorage).length
+        } sessionStorage to temp_credentials.yaml`,
       timestamp: Date.now(),
     });
   }

@@ -1,5 +1,6 @@
 import { execSync, spawn, ChildProcess } from "child_process";
 import { BrowserConfig, BrowserState, RefInfo } from "../types.js";
+import { createBrowserbaseSession } from "./browserbase.js";
 
 // Transient errors that should trigger automatic retry
 const TRANSIENT_ERRORS = [
@@ -60,6 +61,16 @@ export class BrowserAgent {
     if (this.config.executablePath) {
       env.AGENT_BROWSER_EXECUTABLE_PATH = this.config.executablePath;
     }
+    if (this.config.profile) {
+      env.AGENT_BROWSER_PROFILE = this.config.profile;
+    }
+    if (this.config.userAgent) {
+      env.AGENT_BROWSER_USER_AGENT = this.config.userAgent;
+    }
+    if (this.config.args && this.config.args.length > 0) {
+      // agent-browser expects comma or newline separated args via environment
+      env.AGENT_BROWSER_ARGS = this.config.args.join(",");
+    }
 
     let lastError: Error | null = null;
 
@@ -73,16 +84,30 @@ export class BrowserAgent {
         });
         return result.trim();
       } catch (error: any) {
-        let errorMsg = error.message || error.stderr?.toString() || "";
+        const stderrStr = error.stderr?.toString() || "";
+        const stdoutStr = error.stdout?.toString() || "";
+        let errorMsg = error.message || stderrStr || "";
+        const fullErrorText = `${errorMsg} ${stdoutStr}`;
+
+        // Special case: If browser daemon is dead/stuck, try to close it and retry
+        if (fullErrorText.includes("Browser not launched") && attempt < retries) {
+          try {
+            execSync("agent-browser close", { stdio: "ignore" });
+          } catch {
+            // ignore close error
+          }
+          this.sleep(1000);
+          continue;
+        }
 
         // Filter out non-fatal daemon warnings
         const isJustWarning =
-          errorMsg.includes("daemon already running") ||
-          errorMsg.includes("--executable-path ignored");
+          fullErrorText.includes("daemon already running") ||
+          fullErrorText.includes("--executable-path ignored");
 
         // If we have stdout, return it (some commands output to stdout even on "error")
-        if (error.stdout) {
-          const stdout = error.stdout.toString().trim();
+        if (stdoutStr) {
+          const stdout = stdoutStr.trim();
           // If it's just a warning and we have stdout, return stdout
           if (isJustWarning && stdout) {
             return stdout;
@@ -137,11 +162,29 @@ export class BrowserAgent {
   }
 
   private hasInitialized = false;
+  /** CDP URL for Browserbase remote sessions — set once, reused for the lifetime of the task. */
+  private browserbaseCdpUrl: string | null = null;
+  private browserbaseSessionId: string | null = null;
 
   /**
    * Navigate to a URL
    */
   async navigate(url: string): Promise<void> {
+    // ── Browserbase: create session on first use, connect via CDP ──────────
+    if (this.config.browserbase && !this.hasInitialized) {
+      const { api_key, project_id } = this.config.browserbase;
+      try {
+        const session = await createBrowserbaseSession(api_key, project_id);
+        this.browserbaseCdpUrl = session.cdpUrl;
+        this.browserbaseSessionId = session.id;
+        // Attach agent-browser to the remote session
+        this.exec("connect", [this.browserbaseCdpUrl]);
+        this.hasInitialized = true;
+      } catch (err: any) {
+        throw new Error(`Browserbase session error: ${err.message}`);
+      }
+    }
+
     const args: string[] = [];
 
     // On first navigation, close any existing browser to apply our settings

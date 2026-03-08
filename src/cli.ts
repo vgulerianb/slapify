@@ -77,7 +77,7 @@ const program = new Command();
 program
   .name("slapify")
   .description("AI-powered test automation using natural language flow files")
-  .version("0.0.19", "-v, -V, --version");
+  .version("0.0.21", "-v, -V, --version");
 
 // Init command
 program
@@ -1087,7 +1087,7 @@ program
         .join("\n\n");
 
       const analysisResponse = await generateText({
-        model: getModelFromConfig(config.llm) as any,
+        model: getModelFromConfig(Array.isArray(config.llm) ? config.llm[0] : config.llm) as any,
         system: `You are a test automation expert. Analyze failing test steps and suggest fixes.
 
 Original flow file:

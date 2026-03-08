@@ -20,14 +20,71 @@ export function getModel(
 ): Parameters<typeof generateText>[0]["model"] {
   switch (config.provider) {
     case "anthropic": {
-      const anthropic = createAnthropic({ apiKey: config.api_key });
+      const anthropic = createAnthropic({
+        apiKey: config.api_key,
+        baseURL: config.base_url
+      });
       return anthropic(config.model) as Parameters<
         typeof generateText
       >[0]["model"];
     }
     case "openai": {
-      const openai = createOpenAI({ apiKey: config.api_key });
-      return openai(config.model) as Parameters<
+      const openaiOpts: any = {
+        apiKey: config.api_key,
+        fetch: async (url: string, options: any) => {
+          if (process.env.SLAPIFY_DEBUG_AI) {
+            console.log("\n[DEBUG] === OUTGOING AI REQUEST ===");
+            console.log("[DEBUG] URL:", url);
+            if (options.body) {
+              try {
+                const parsed = JSON.parse(options.body as string);
+                console.log("[DEBUG] BODY:", JSON.stringify(parsed, null, 2));
+              } catch {
+                console.log("[DEBUG] BODY:", options.body);
+              }
+            }
+            console.log("[DEBUG] ===================================\n");
+          }
+
+          const response = await fetch(url, options);
+
+          if (process.env.SLAPIFY_DEBUG_AI) {
+            const clone = response.clone();
+            console.log("\n[DEBUG] === INCOMING AI RESPONSE ===");
+            console.log("[DEBUG] STATUS:", clone.status);
+            try {
+              const text = await clone.text();
+              console.log("[DEBUG] PAYLOAD:", text);
+            } catch (e) {
+              console.log("[DEBUG] Could not read response text");
+            }
+            console.log("[DEBUG] ====================================\n");
+          }
+          return response;
+        }
+      };
+
+      if (config.base_url) {
+        let cleanUrl = config.base_url;
+        // Strip trailing /chat/completions if the user accidentally included it
+        // since the @ai-sdk/openai provider auto-appends it internally
+        if (cleanUrl.endsWith("/chat/completions")) {
+          cleanUrl = cleanUrl.replace(/\/chat\/completions\/?$/, "");
+        }
+        openaiOpts.baseURL = cleanUrl;
+
+        // Vercel AI SDK needs 'compatible' mode for non-OpenAI gateways like OpenRouter/LiteLLM
+        openaiOpts.compatibility = "compatible";
+      }
+
+      // Support Vercel AI Gateway registry-style definitions e.g. "openai/gpt-4o"
+      let modelName = config.model;
+      if (modelName.startsWith("openai/")) {
+        modelName = modelName.substring(7);
+      }
+
+      const openai = createOpenAI(openaiOpts);
+      return openai(modelName) as Parameters<
         typeof generateText
       >[0]["model"];
     }
@@ -52,6 +109,37 @@ export function getModel(
       const ollama = createOpenAI({
         apiKey: "ollama", // Ollama doesn't need a real key
         baseURL: config.base_url || "http://localhost:11434/v1",
+        fetch: async (url: any, options: any) => {
+          if (process.env.SLAPIFY_DEBUG_AI) {
+            console.log("\n[DEBUG] === OUTGOING OLLAMA REQUEST ===");
+            console.log("[DEBUG] URL:", url);
+            if (options.body) {
+              try {
+                const parsed = JSON.parse(options.body as string);
+                console.log("[DEBUG] BODY:", JSON.stringify(parsed, null, 2));
+              } catch {
+                console.log("[DEBUG] BODY:", options.body);
+              }
+            }
+            console.log("[DEBUG] =====================================\n");
+          }
+
+          const response = await fetch(url, options);
+
+          if (process.env.SLAPIFY_DEBUG_AI) {
+            const clone = response.clone();
+            console.log("\n[DEBUG] === INCOMING OLLAMA RESPONSE ===");
+            console.log("[DEBUG] STATUS:", clone.status);
+            try {
+              const text = await clone.text();
+              console.log("[DEBUG] PAYLOAD:", text);
+            } catch (e) {
+              console.log("[DEBUG] Could not read response text");
+            }
+            console.log("[DEBUG] =====================================\n");
+          }
+          return response;
+        }
       });
       return ollama(config.model) as Parameters<
         typeof generateText
@@ -106,11 +194,10 @@ Available browser commands:
 - goBack() - Navigate back
 - reload() - Reload page
 
-${
-  credentials && Object.keys(credentials).length > 0
-    ? `Available credential profiles: ${Object.keys(credentials).join(", ")}. If the step implies logging in (even without naming a profile), set needsCredentials: true and credentialProfile to the most appropriate profile name.`
-    : ""
-}
+${credentials && Object.keys(credentials).length > 0
+        ? `Available credential profiles: ${Object.keys(credentials).join(", ")}. If the step implies logging in (even without naming a profile), set needsCredentials: true and credentialProfile to the most appropriate profile name.`
+        : ""
+      }
 
 Respond with a JSON object:
 {
@@ -135,16 +222,14 @@ IMPORTANT RULES:
     const userPrompt = `Interpret this test step and provide browser commands:
 
 Step: "${step.text}"
-${
-  step.optional
-    ? "(This step is optional - can be skipped if not applicable)"
-    : ""
-}
-${
-  step.conditional
-    ? `Condition: "${step.condition}" → Action: "${step.action}"`
-    : ""
-}`;
+${step.optional
+        ? "(This step is optional - can be skipped if not applicable)"
+        : ""
+      }
+${step.conditional
+        ? `Condition: "${step.condition}" → Action: "${step.action}"`
+        : ""
+      }`;
 
     const response = await generateText({
       model,
