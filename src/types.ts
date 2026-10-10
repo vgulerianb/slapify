@@ -2,6 +2,13 @@
 export interface SlapifyConfig {
   /** Single model or an ordered fallback chain (tried in order on failure). */
   llm: LLMConfig | LLMConfig[];
+  /**
+   * Optional Jev decision model. Speeds up narrow yes/no and "which one"
+   * decisions (finding an element, checking a condition, skipping empty
+   * popup checks) without replacing the main LLM, which still plans and
+   * writes. Every Jev call falls back to the LLM when it is not confident.
+   */
+  jev?: JevConfig;
   /** Folders the agent may upload files from and save downloads to. */
   files?: FilesConfig;
   browser?: BrowserConfig;
@@ -35,6 +42,36 @@ export interface LLMConfig {
   cli_path?: string;
   /** claude-cli only: max seconds per CLI call before it's killed (default: 600) */
   timeout_seconds?: number;
+}
+
+export interface JevConfig {
+  /** Off unless set. Jev is an accelerator, never a requirement. */
+  enabled?: boolean;
+  /**
+   * Fills in base_url and model. All three accept the same TypeSafe
+   * "System One" request body, so only these defaults differ.
+   */
+  provider?: "typesafe" | "vercel" | "openrouter";
+  /** Overrides the provider's base URL, e.g. for a proxy or LiteLLM pass-through. */
+  base_url?: string;
+  /** Request path appended to base_url. Default "/v1/systemone". */
+  path?: string;
+  api_key?: string;
+  /** Overrides the provider's model id. */
+  model?: string;
+  /** Minimum confidence to act on a Choice answer. Default 0.7. */
+  min_confidence?: number;
+  /** Per-request timeout. Default 10000ms. */
+  timeout_ms?: number;
+  /** Turn individual integrations off. All default to on when Jev is enabled. */
+  use?: {
+    /** Task agent: find_element and check tools. */
+    tools?: boolean;
+    /** Flow runner: skip the popup-check LLM call when there is clearly no popup. */
+    interruption_gate?: boolean;
+    /** Flow runner: pass "Verify ..." steps without an LLM call when clearly true. */
+    verify_fast_path?: boolean;
+  };
 }
 
 export interface PluginsConfig {
@@ -178,6 +215,13 @@ export interface TestResult {
   assumptions: string[];
   /** Populated when --performance flag is used */
   perfAudit?: import("./perf/audit.js").PerfAuditResult;
+  /** How many LLM calls Jev replaced during the run, when Jev is enabled. */
+  jev?: {
+    popupChecks: number;
+    popupChecksSkipped: number;
+    verifySteps: number;
+    verifyFastPassed: number;
+  };
 }
 
 // Browser state

@@ -551,6 +551,12 @@ browser:
   args:
     - "--no-sandbox"
 
+# Optional fast decision model (see "Jev")
+jev:
+  enabled: true
+  provider: typesafe          # or vercel, openrouter
+  api_key: ${TYPESAFE_API_KEY}
+
 # Where uploads may come from and downloads go (defaults shown)
 files:
   uploads_dir: .slapify/uploads
@@ -677,6 +683,42 @@ claude -p "Run: npx slapify task 'Get the top 5 HN posts with titles and URLs' \
 ```
 
 If Slapify is *also* configured with the `claude-cli` provider, every Slapify turn spawns its own `claude -p` call. That works, but it's usage-heavy — for high-volume scripting, an API-key provider inside Slapify is the lighter setup.
+
+---
+
+## Jev (optional decision model)
+
+[Jev](https://www.browserbase.com/blog/what-is-jev) is TypeSafe's decision model. It doesn't write or plan; it answers narrow questions ("which of these elements is the reply box?", "does this page show my reply?") with calibrated probabilities, fast and cheaply. Slapify uses it as an accelerator next to your main LLM, never instead of it:
+
+| Where | What Jev does | When it isn't sure |
+| --- | --- | --- |
+| `find_element(description)` | Picks the matching ref from the page | Returns `confident: false`; the agent reads the snapshot itself |
+| `check(statement)` | Probability a statement about the page is true | Anything between 0.15 and 0.85 means the agent looks itself |
+| Action review | Clear / caution on irreversible actions | Falls back to the LLM reviewer |
+| Flow runner | Skips the popup-check LLM call when there's clearly no popup; passes clearly-true `Verify …` steps | The normal LLM path runs |
+
+It works through any of three providers, all taking the same request:
+
+```yaml
+jev:
+  enabled: true
+  provider: typesafe            # api.typesafe.ai — key from console.typesafe.ai
+  api_key: ${TYPESAFE_API_KEY}
+
+# or through Vercel AI Gateway
+jev:
+  enabled: true
+  provider: vercel
+  api_key: ${AI_GATEWAY_API_KEY}
+
+# or through OpenRouter
+jev:
+  enabled: true
+  provider: openrouter
+  api_key: ${OPENROUTER_API_KEY}
+```
+
+`base_url`, `path` and `model` override the provider defaults (for a proxy, say); `min_confidence` (default 0.7) and `timeout_ms` (default 10000) tune it; and `use.tools`, `use.interruption_gate` and `use.verify_fast_path` switch individual integrations off. A misconfigured or unreachable Jev disables itself with a warning; the run carries on without it.
 
 ---
 

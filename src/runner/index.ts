@@ -14,6 +14,16 @@ import * as fs from "fs";
 import * as path from "path";
 import * as yaml from "yaml";
 import * as readline from "readline";
+import { JevClient } from "../jev/client.js";
+import { checkStatement, hasInterruption } from "../jev/decisions.js";
+
+// Jev fast-path thresholds. Deliberately asymmetric: Jev may only take the
+// shortcut in the direction where being wrong is cheap. A missed popup gets
+// caught by the next step's check; a wrongly-passed verify would hide a real
+// bug, so it needs to be very sure, and a likely FAIL always goes to the LLM.
+const JEV_SKIP_POPUP_BELOW = 0.15;
+const JEV_PASS_VERIFY_ABOVE = 0.9;
+const VERIFY_STEP = /^(verify|check|confirm|ensure|assert|expect)\b/i;
 
 /**
  * Test runner that executes flow files
@@ -25,12 +35,16 @@ export class TestRunner {
   private ai: AIInterpreter;
   private autoHandled: string[] = [];
   private allAssumptions: string[] = [];
+  private jev: JevClient | null;
+  /** How often Jev replaced an LLM call, for reports and benchmarks. */
+  readonly jevStats = { popupChecks: 0, popupChecksSkipped: 0, verifySteps: 0, verifyFastPassed: 0 };
 
   constructor(config: SlapifyConfig, credentials: CredentialsConfig) {
     this.config = config;
     this.credentials = credentials;
     this.browser = new BrowserAgent(config.browser);
     this.ai = new AIInterpreter(Array.isArray(config.llm) ? config.llm[0] : config.llm);
+    this.jev = JevClient.fromConfig(config.jev).client;
   }
 
   /**
@@ -155,6 +169,7 @@ export class TestRunner {
       autoHandled: this.autoHandled,
       assumptions: this.allAssumptions,
       ...(perfAudit ? { perfAudit } : {}),
+      ...(this.jev ? { jev: { ...this.jevStats } } : {}),
     };
   }
 
@@ -236,6 +251,38 @@ export class TestRunner {
 
         await this.handleLogin(profile, actions);
       } else {
+        // Jev fast path for "Verify ..." steps: one cheap yes/no instead of an
+        // LLM call. Only a confident PASS is taken; anything else, including a
+        // likely failure, still goes to the LLM below.
+        if (
+          this.jev &&
+          this.config.jev?.use?.verify_fast_path !== false &&
+          VERIFY_STEP.test(step.text.trim())
+        ) {
+          this.jevStats.verifySteps++;
+          const text = await this.browser.getPageText().catch(() => "");
+          const v = text ? await checkStatement(this.jev, text, step.text) : null;
+          if (v && !("error" in v) && v.probability >= JEV_PASS_VERIFY_ABOVE) {
+            this.jevStats.verifyFastPassed++;
+            actions.push({
+              type: "verify",
+              description: `Verified with Jev (p=${v.probability.toFixed(2)}, ${v.ms}ms)`,
+              timestamp: Date.now(),
+            });
+            const shot = this.config.report?.screenshots
+              ? await this.browser.screenshot(`step-${step.line}.png`).catch(() => undefined)
+              : undefined;
+            return {
+              step,
+              status: "passed",
+              duration: Date.now() - startTime,
+              actions,
+              assumptions,
+              screenshot: shot as string | undefined,
+            };
+          }
+        }
+
         // Interpret step with AI
         const interpreted = await this.ai.interpretStep(
           step,
@@ -516,6 +563,19 @@ export class TestRunner {
   private async handleInterruptions(actions: ActionLog[]): Promise<void> {
     try {
       const state = await this.browser.getState();
+
+      // Runs twice per step and usually finds nothing, so let Jev skip the
+      // LLM call when the page clearly has no popup. Anything else, including
+      // Jev being unavailable, falls through to the normal LLM check.
+      if (this.jev && this.config.jev?.use?.interruption_gate !== false) {
+        this.jevStats.popupChecks++;
+        const v = await hasInterruption(this.jev, state.snapshot);
+        if (!("error" in v) && v.probability < JEV_SKIP_POPUP_BELOW) {
+          this.jevStats.popupChecksSkipped++;
+          return;
+        }
+      }
+
       const interruptions = await this.ai.checkAutoHandle(state);
 
       for (const int of interruptions) {
