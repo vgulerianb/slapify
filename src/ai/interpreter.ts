@@ -4,6 +4,7 @@ import { createOpenAI } from "@ai-sdk/openai";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { createMistral } from "@ai-sdk/mistral";
 import { createGroq } from "@ai-sdk/groq";
+import { createClaudeCliModel } from "./claude-cli.js";
 import {
   LLMConfig,
   FlowStep,
@@ -219,6 +220,15 @@ export function getModel(
       return ollama(config.model) as Parameters<
         typeof generateText
       >[0]["model"];
+    }
+    case "claude-cli": {
+      // Runs through the local `claude` binary — uses the user's Claude Code
+      // subscription login, no API key required.
+      return createClaudeCliModel({
+        model: config.model,
+        cliPath: config.cli_path,
+        timeoutSeconds: config.timeout_seconds,
+      }) as Parameters<typeof generateText>[0]["model"];
     }
     default:
       throw new Error(`Unsupported LLM provider: ${config.provider}`);

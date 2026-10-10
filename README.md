@@ -37,6 +37,8 @@ npx slapify init
 
 # 2. Set your API key
 export ANTHROPIC_API_KEY=your-key
+#    ...or skip this entirely: pick "Claude Code CLI" in init to run on your
+#    Claude Pro/Max subscription via `claude -p`. See "Using your Claude subscription".
 
 # 3a. Run an autonomous task
 npx slapify task "Summarise the top posts on reddit.com/r/programming today" --report
@@ -556,9 +558,92 @@ Add a `telegram` block to your config. The agent will:
 
 ---
 
+## Using your Claude subscription (`claude -p`)
+
+Already pay for Claude Pro or Max? Slapify can run every agent turn through your local [Claude Code](https://claude.com/claude-code) install instead of the Anthropic API. No API key, no per-token bill — usage counts against your plan.
+
+### Setup
+
+```bash
+# 1. Install Claude Code and log in once
+npm install -g @anthropic-ai/claude-code
+claude            # opens a login flow the first time
+
+# 2. Confirm print mode works
+claude -p "hi"
+
+# 3. Pick "Claude Code CLI" in init — it runs a test call to verify the login
+npx slapify init
+```
+
+Or set it by hand in `.slapify/config.yaml`:
+
+```yaml
+llm:
+  provider: claude-cli
+  model: sonnet                 # CLI aliases (sonnet, opus, haiku) or a full model id
+  # cli_path: /usr/local/bin/claude   # only if `claude` isn't on your PATH
+  # timeout_seconds: 600              # max seconds per LLM call (default 600)
+```
+
+Then run tasks exactly as you would with any other provider:
+
+```bash
+npx slapify task "Summarise the top 5 posts on news.ycombinator.com"
+```
+
+### How it works
+
+Each agent turn is one `claude -p` call. `claude -p` only returns text, so Slapify does tool calling through the prompt: the tool schemas go into the system prompt, Claude answers with a `{"tool_calls": [...]}` JSON object, and Slapify parses that and runs the tools.
+
+A few deliberate choices keep that reliable:
+
+- **Claude Code's own tools are switched off** (`--tools ""`) on agent turns. It's used purely as a model. With its real tools enabled, the model stops trusting the prompt-based protocol and answers in prose, which breaks the turn.
+- **`ANTHROPIC_API_KEY` is stripped** from the environment for every call, so it always runs on your subscription login — never silently on an API key that happens to be set.
+- **Cut-off responses are repaired.** If a long response is truncated mid-JSON, Slapify closes the open strings and brackets and recovers the tool calls rather than treating the fragment as a final answer.
+
+### What to know
+
+- **It uses your plan's allowance.** A long-running task makes a `claude -p` call every turn, which adds up. When you hit your usage limit, every call fails instantly — the error shows `"duration_api_ms": 0`, meaning the request never reached the API. Retrying won't help until the limit resets.
+- **Slower per turn than the API**, since each call starts a process. Timeouts and dropped connections are retried 3 times with backoff; raise `timeout_seconds` if your tasks legitimately need longer turns.
+- **`temperature` and `maxTokens` are not supported** — they're ignored with a warning.
+- **Vision works**, through a separate one-shot call. See [Vision](#vision).
+
+### Driving Slapify *from* Claude Code
+
+The reverse direction also works: Slapify is a CLI, so Claude Code can call it as a tool — Claude Code plans, Slapify does the browsing. Allow the command and let it run:
+
+```bash
+claude -p "Use slapify to fetch the top 5 posts on news.ycombinator.com as JSON, then summarise the themes." \
+  --allowedTools "Bash(npx slapify:*)"
+```
+
+For results Claude Code can reliably read back, have Slapify write structured output with `--schema` and `--output`:
+
+```bash
+claude -p "Run: npx slapify task 'Get the top 5 HN posts with titles and URLs' \
+  --schema '{\"type\":\"object\",\"properties\":{\"posts\":{\"type\":\"array\"}}}' \
+  --output hn.json — then read hn.json and tell me which post is most relevant to TypeScript." \
+  --allowedTools "Bash(npx slapify:*)" "Read"
+```
+
+If Slapify is *also* configured with the `claude-cli` provider, every Slapify turn spawns its own `claude -p` call. That works, but it's usage-heavy — for high-volume scripting, an API-key provider inside Slapify is the lighter setup.
+
+---
+
 ## LLM Providers
 
-Supports 6 providers via Vercel AI SDK.
+Supports 7 providers via Vercel AI SDK.
+
+### Claude subscription (no API key)
+
+```yaml
+llm:
+  provider: claude-cli
+  model: sonnet
+```
+
+Runs through the local `claude` binary on your Claude Pro/Max plan. Full setup and caveats: [Using your Claude subscription](#using-your-claude-subscription-claude--p).
 
 ### Budget-friendly (recommended)
 
@@ -640,6 +725,7 @@ your-project/
 
 - Node.js 18+
 - `agent-browser` (installed as a peer dependency)
+- An LLM: an API key for any supported provider, **or** [Claude Code](https://claude.com/claude-code) installed and logged in to use your Claude subscription
 
 ---
 

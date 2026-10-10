@@ -29,6 +29,7 @@ import { createOpenAI } from "@ai-sdk/openai";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { createMistral } from "@ai-sdk/mistral";
 import { createGroq } from "@ai-sdk/groq";
+import { createClaudeCliModel } from "./ai/claude-cli.js";
 import { LLMConfig, CredentialProfile } from "./types.js";
 import yaml from "yaml";
 
@@ -66,6 +67,13 @@ function getModelFromConfig(llmConfig: LLMConfig) {
         baseURL: llmConfig.base_url || "http://localhost:11434/v1",
       });
       return ollama(llmConfig.model);
+    }
+    case "claude-cli": {
+      return createClaudeCliModel({
+        model: llmConfig.model,
+        cliPath: llmConfig.cli_path,
+        timeoutSeconds: llmConfig.timeout_seconds,
+      });
     }
     default:
       throw new Error(`Unsupported provider: ${llmConfig.provider}`);
@@ -126,6 +134,21 @@ program
     }
 
     const providerInfo: Record<string, ProviderConfig> = {
+      "claude-cli": {
+        name: "Claude Code CLI (subscription, no API key)",
+        envVar: "",
+        defaultModel: "sonnet",
+        models: [
+          {
+            id: "sonnet",
+            name: "Sonnet (CLI alias) - highly capable & recommended",
+            recommended: true,
+          },
+          { id: "opus", name: "Opus (CLI alias) - most capable" },
+          { id: "haiku", name: "Haiku (CLI alias) - fast & cheap" },
+          { id: "custom", name: "Enter custom model ID" },
+        ],
+      },
       anthropic: {
         name: "Anthropic (Claude)",
         envVar: "ANTHROPIC_API_KEY",
@@ -216,21 +239,26 @@ program
       // Step 1: LLM Provider
       console.log(chalk.cyan("1. Choose your LLM provider:\n"));
       console.log("   1) Anthropic (Claude) " + chalk.green("- recommended"));
-      console.log("   2) OpenAI (GPT-4)");
-      console.log("   3) Google (Gemini)");
-      console.log("   4) Mistral");
-      console.log("   5) Groq " + chalk.gray("- fast & free tier"));
-      console.log("   6) Ollama " + chalk.gray("- local, no API key"));
+      console.log(
+        "   2) Claude Code CLI " +
+        chalk.gray("- uses your Claude subscription, no API key")
+      );
+      console.log("   3) OpenAI (GPT-4)");
+      console.log("   4) Google (Gemini)");
+      console.log("   5) Mistral");
+      console.log("   6) Groq " + chalk.gray("- fast & free tier"));
+      console.log("   7) Ollama " + chalk.gray("- local, no API key"));
       console.log("");
 
       const providerChoice = await question(chalk.white("   Select [1]: "));
       const providerMap: Record<string, LLMConfig["provider"]> = {
         "1": "anthropic",
-        "2": "openai",
-        "3": "google",
-        "4": "mistral",
-        "5": "groq",
-        "6": "ollama",
+        "2": "claude-cli",
+        "3": "openai",
+        "4": "google",
+        "5": "mistral",
+        "6": "groq",
+        "7": "ollama",
       };
       provider = providerMap[providerChoice] || "anthropic";
 
@@ -296,8 +324,40 @@ program
         }
       }
 
-      // Step 2: API Key Verification (skip for Ollama)
-      if (provider !== "ollama") {
+      // Step 2 (claude-cli): verify the claude binary is logged in — no API key involved
+      if (provider === "claude-cli") {
+        console.log(chalk.cyan("2. Claude Code CLI check:\n"));
+        rl.pause();
+        const cliSpinner = ora("   Testing claude CLI (uses your subscription)...").start();
+        try {
+          const testModel = getModelFromConfig({
+            provider,
+            model: model || "sonnet",
+          });
+          const response = await generateText({
+            model: testModel as any,
+            prompt: "Reply with only the word 'pong'",
+          });
+          if (response.text) {
+            cliSpinner.succeed(chalk.green("claude CLI works! ✓"));
+          } else {
+            cliSpinner.warn(chalk.yellow("claude CLI responded but empty — check `claude -p 'hi'` manually"));
+          }
+        } catch (error: any) {
+          cliSpinner.fail(chalk.red("claude CLI test failed"));
+          console.log(chalk.red(`   Error: ${error.message}`));
+          console.log(
+            chalk.gray(
+              "   Install Claude Code (https://claude.com/claude-code) and run `claude` once to log in.\n"
+            )
+          );
+        }
+        rl.resume();
+        console.log("");
+      }
+
+      // Step 2: API Key Verification (skip for Ollama and claude-cli)
+      if (provider !== "ollama" && provider !== "claude-cli") {
         console.log(chalk.cyan("2. API Key verification:\n"));
 
         const envVar = info.envVar;
@@ -507,6 +567,9 @@ program
         console.log(chalk.white(`  1. Make sure Ollama is running:`));
         console.log(chalk.cyan(`     ollama serve`));
         console.log(chalk.cyan(`     ollama pull llama3`));
+      } else if (provider === "claude-cli") {
+        console.log(chalk.white(`  1. No API key needed — make sure Claude Code is logged in:`));
+        console.log(chalk.cyan(`     claude  (run once and sign in with your subscription)`));
       } else {
         console.log(chalk.white(`  1. Set your API key:`));
         console.log(chalk.cyan(`     export ${info.envVar}=your-key-here`));

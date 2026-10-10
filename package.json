@@ -20,7 +20,8 @@
     "start": "node dist/index.js",
     "lint": "tsc --noEmit",
     "minify": "find dist -name '*.js' | xargs -P4 -I{} terser {} --compress --mangle --module -o {}",
-    "prepublishOnly": "npm run build && npm run minify"
+    "prepublishOnly": "npm run build && npm run minify",
+    "test": "npm run build && AGENT_BROWSER_SESSION=slapify-test node --test --test-concurrency=1 test/*.test.mjs"
   },
   "keywords": [
     "ai",

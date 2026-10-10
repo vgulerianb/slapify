@@ -121,7 +121,14 @@ export function loadCredentials(configDir?: string): CredentialsConfig {
 }
 
 export interface InitOptions {
-  provider?: "anthropic" | "openai" | "google" | "mistral" | "groq" | "ollama";
+  provider?:
+  | "anthropic"
+  | "openai"
+  | "google"
+  | "mistral"
+  | "groq"
+  | "ollama"
+  | "claude-cli";
   model?: string;
   browserPath?: string;
   useSystemBrowser?: boolean;
@@ -129,6 +136,7 @@ export interface InitOptions {
 
 const DEFAULT_MODELS: Record<string, string> = {
   anthropic: "claude-sonnet-4-6", // Highly capable & recommended
+  "claude-cli": "sonnet", // CLI alias — resolved by Claude Code
   openai: "gpt-5.2", // Latest flagship
   google: "gemini-3-flash", // Balanced & fast
   mistral: "mistral-small-latest", // Cheap
@@ -138,6 +146,7 @@ const DEFAULT_MODELS: Record<string, string> = {
 
 const ENV_VARS: Record<string, string> = {
   anthropic: "ANTHROPIC_API_KEY",
+  "claude-cli": "",
   openai: "OPENAI_API_KEY",
   google: "GOOGLE_API_KEY",
   mistral: "MISTRAL_API_KEY",
@@ -191,6 +200,13 @@ export function initConfig(
     llmConfig += `
   # Ollama runs locally - no API key needed
   base_url: http://localhost:11434/v1`;
+  } else if (provider === "claude-cli") {
+    llmConfig += `
+  # Runs through the local \`claude\` binary — uses your Claude Code
+  # subscription login. No API key needed. Model accepts CLI aliases
+  # (sonnet, opus, haiku) or a full model id.
+  # cli_path: /usr/local/bin/claude   # only if claude isn't on PATH
+  # timeout_seconds: 600              # max seconds per LLM call`;
   } else {
     llmConfig += `
   api_key: \${${envVar}}`;

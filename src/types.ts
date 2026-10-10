@@ -9,12 +9,23 @@ export interface SlapifyConfig {
 }
 
 export interface LLMConfig {
-  provider: "anthropic" | "openai" | "google" | "mistral" | "groq" | "ollama";
+  provider:
+  | "anthropic"
+  | "openai"
+  | "google"
+  | "mistral"
+  | "groq"
+  | "ollama"
+  | "claude-cli";
   model: string;
   api_key?: string;
   base_url?: string;
   /** Human-readable label shown in fallback logs, e.g. 'Claude (primary)' */
   label?: string;
+  /** claude-cli only: path to the claude binary (default: "claude" from PATH) */
+  cli_path?: string;
+  /** claude-cli only: max seconds per CLI call before it's killed (default: 600) */
+  timeout_seconds?: number;
 }
 
 export interface PluginsConfig {
