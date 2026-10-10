@@ -3,6 +3,7 @@ import { fileURLToPath } from "url";
 import path from "path";
 import { BrowserConfig, BrowserState, RefInfo } from "../types.js";
 import { createBrowserbaseSession } from "./browserbase.js";
+import { CdpInput } from "./input.js";
 
 // Fingerprint-evasion script injected via `agent-browser --init-script` when
 // `config.stealth` is enabled. Lives alongside the compiled agent.js.
@@ -565,6 +566,26 @@ export class BrowserAgent {
     }
   }
 
+  private cdpInput: CdpInput | null = null;
+
+  /**
+   * Real keyboard and mouse input over DevTools: held keys, several keys at
+   * once, clicks at coordinates. For games and canvas apps, where `press` (a
+   * tap) and element refs don't exist or aren't enough.
+   */
+  input(): CdpInput {
+    if (!this.cdpInput) {
+      const url = this.exec("get", ["cdp-url"], 0).trim().split("\n").pop()!.trim();
+      if (!/^wss?:\/\//.test(url)) throw new Error(`No DevTools endpoint for input: ${url.slice(0, 120)}`);
+      this.cdpInput = new CdpInput(url, async () => {
+        const token = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+        await this.evaluate(`(()=>{window.__slapifyActive=${JSON.stringify(token)};return "ok"})()`);
+        return token;
+      });
+    }
+    return this.cdpInput;
+  }
+
   /**
    * Box of an element in page viewport coordinates, or null. agent-browser
    * reports boxes of elements inside an iframe relative to that iframe, so
@@ -956,6 +977,8 @@ export class BrowserAgent {
    * Close the browser
    */
   async close(): Promise<void> {
+    this.cdpInput?.close();
+    this.cdpInput = null;
     if (this.isOpen) {
       try {
         this.exec("close", []);
