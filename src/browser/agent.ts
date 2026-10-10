@@ -586,6 +586,16 @@ export class BrowserAgent {
     return this.cdpInput;
   }
 
+  /** Start a WebM recording of the page (agent-browser needs ffmpeg on PATH). */
+  startRecording(outPath: string): void {
+    this.exec("record", ["start", outPath], 0);
+  }
+
+  /** Stop the recording and write the file. */
+  stopRecording(): void {
+    this.exec("record", ["stop"], 0);
+  }
+
   /**
    * Box of an element in page viewport coordinates, or null. agent-browser
    * reports boxes of elements inside an iframe relative to that iframe, so
