@@ -35,6 +35,7 @@ export type {
   SlapifyConfig,
   LLMConfig,
   BrowserConfig,
+  FilesConfig,
   ReportConfig,
   CredentialsConfig,
   CredentialProfile,

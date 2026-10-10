@@ -551,6 +551,11 @@ browser:
   args:
     - "--no-sandbox"
 
+# Where uploads may come from and downloads go (defaults shown)
+files:
+  uploads_dir: .slapify/uploads
+  downloads_dir: .slapify/downloads
+
 report:
   format: html
   screenshots: true

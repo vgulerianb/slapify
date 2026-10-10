@@ -2,10 +2,19 @@
 export interface SlapifyConfig {
   /** Single model or an ordered fallback chain (tried in order on failure). */
   llm: LLMConfig | LLMConfig[];
+  /** Folders the agent may upload files from and save downloads to. */
+  files?: FilesConfig;
   browser?: BrowserConfig;
   report?: ReportConfig;
   plugins?: PluginsConfig;
   telegram?: TelegramConfig;
+}
+
+export interface FilesConfig {
+  /** Only files in here (or in downloads_dir) can be uploaded. Default: .slapify/uploads */
+  uploads_dir?: string;
+  /** Downloads are saved here. Default: .slapify/downloads */
+  downloads_dir?: string;
 }
 
 export interface LLMConfig {
