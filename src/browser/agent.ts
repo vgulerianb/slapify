@@ -1,6 +1,12 @@
-import { execSync, spawn, ChildProcess } from "child_process";
+import { execSync, execFileSync, spawn, ChildProcess } from "child_process";
+import { fileURLToPath } from "url";
+import path from "path";
 import { BrowserConfig, BrowserState, RefInfo } from "../types.js";
 import { createBrowserbaseSession } from "./browserbase.js";
+
+// Cap on agent-browser stdout. Full-page snapshots of large SPAs run to
+// several MB; Node's 1MB execSync default truncated them mid-JSON.
+const MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
 
 // Transient errors that should trigger automatic retry
 const TRANSIENT_ERRORS = [
@@ -54,6 +60,11 @@ export class BrowserAgent {
     args: string[] = [],
     retries: number = 2
   ): string {
+    // Arguments go straight to agent-browser with no shell in between. Text
+    // the model types, URLs it navigates to and scripts it evaluates are
+    // arbitrary strings, often shaped by the page: through a shell, a backtick
+    // or $(...) in a reply would run as a command, "$5" would vanish, and an
+    // "&" in a URL would cut it short. Only used for display below.
     const fullCommand = ["agent-browser", command, ...args].join(" ");
 
     // Set up environment with executable path if configured
@@ -76,11 +87,16 @@ export class BrowserAgent {
 
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
-        const result = execSync(fullCommand, {
+        const result = execFileSync("agent-browser", [command, ...args], {
           encoding: "utf-8",
           timeout: this.config.timeout,
           stdio: ["pipe", "pipe", "pipe"],
           env,
+          // Node defaults to 1MB. A full accessibility snapshot of a heavy SPA
+          // blows past that, and execSync then throws ENOBUFS *with partial
+          // stdout attached* — which used to be returned as if it were the
+          // whole result, yielding truncated JSON and silently empty refs.
+          maxBuffer: MAX_OUTPUT_BYTES,
         });
         return result.trim();
       } catch (error: any) {
@@ -88,6 +104,18 @@ export class BrowserAgent {
         const stdoutStr = error.stdout?.toString() || "";
         let errorMsg = error.message || stderrStr || "";
         const fullErrorText = `${errorMsg} ${stdoutStr}`;
+
+        // Output overflowed the buffer. The partial stdout attached to this
+        // error is a truncated fragment — returning it downstream produces
+        // unparseable JSON and an empty ref set with no visible failure, so
+        // surface it as an error instead of passing the fragment along.
+        if (error.code === "ENOBUFS") {
+          throw new Error(
+            `Browser command produced more than ${Math.round(
+              MAX_OUTPUT_BYTES / (1024 * 1024)
+            )}MB of output and was truncated: ${fullCommand}`
+          );
+        }
 
         // Special case: If browser daemon is dead/stuck, try to close it and retry
         if (fullErrorText.includes("Browser not launched") && attempt < retries) {
@@ -209,7 +237,7 @@ export class BrowserAgent {
 
     // Use custom executable path if specified
     if (this.config.executablePath) {
-      args.push("--executable-path", `"${this.config.executablePath}"`);
+      args.push("--executable-path", this.config.executablePath);
     }
 
     const doOpen = () => this.exec("open", [url, ...args]);
@@ -292,14 +320,14 @@ export class BrowserAgent {
    * Fill an input field
    */
   async fill(selector: string, value: string): Promise<void> {
-    this.exec("fill", [selector, `"${value}"`]);
+    this.exec("fill", [selector, value]);
   }
 
   /**
    * Type text (appends to existing value)
    */
   async type(selector: string, value: string): Promise<void> {
-    this.exec("type", [selector, `"${value}"`]);
+    this.exec("type", [selector, value]);
   }
 
   /**
@@ -341,9 +369,9 @@ export class BrowserAgent {
     if (typeof condition === "number") {
       this.exec("wait", [String(condition)]);
     } else if (condition.startsWith("text=")) {
-      this.exec("wait", ["--text", `"${condition.substring(5)}"`]);
+      this.exec("wait", ["--text", condition.substring(5)]);
     } else if (condition.startsWith("url=")) {
-      this.exec("wait", ["--url", `"${condition.substring(4)}"`]);
+      this.exec("wait", ["--url", condition.substring(4)]);
     } else {
       this.exec("wait", [condition]);
     }
@@ -392,7 +420,7 @@ export class BrowserAgent {
    * Execute JavaScript
    */
   async evaluate(script: string): Promise<string> {
-    return this.exec("eval", [`"${script.replace(/"/g, '\\"')}"`]);
+    return this.exec("eval", [script]);
   }
 
   /**
@@ -400,8 +428,7 @@ export class BrowserAgent {
    */
   async setCookie(name: string, value: string): Promise<void> {
     // Escape special shell characters in cookie value
-    const escapedValue = `'${value.replace(/'/g, "'\\''")}'`;
-    this.exec("cookies", ["set", name, escapedValue]);
+    this.exec("cookies", ["set", name, value]);
   }
 
   /**
@@ -436,7 +463,7 @@ export class BrowserAgent {
    */
   async getLocalStorage(): Promise<Record<string, string>> {
     // Use single quotes to avoid shell escaping issues with parentheses
-    const script = `'(function(){var r={};for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i);r[k]=localStorage.getItem(k);}return JSON.stringify(r);})()'`;
+    const script = `(function(){var r={};for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i);r[k]=localStorage.getItem(k);}return JSON.stringify(r);})()`;
     const result = this.exec("eval", [script]);
     try {
       // Result might be double-quoted string, so parse twice if needed
@@ -454,7 +481,7 @@ export class BrowserAgent {
    * Get all sessionStorage
    */
   async getSessionStorage(): Promise<Record<string, string>> {
-    const script = `'(function(){var r={};for(var i=0;i<sessionStorage.length;i++){var k=sessionStorage.key(i);r[k]=sessionStorage.getItem(k);}return JSON.stringify(r);})()'`;
+    const script = `(function(){var r={};for(var i=0;i<sessionStorage.length;i++){var k=sessionStorage.key(i);r[k]=sessionStorage.getItem(k);}return JSON.stringify(r);})()`;
     const result = this.exec("eval", [script]);
     try {
       // Result might be double-quoted string, so parse twice if needed
@@ -472,18 +499,14 @@ export class BrowserAgent {
    * Set localStorage value
    */
   async setLocalStorage(key: string, value: string): Promise<void> {
-    // Escape special shell characters
-    const escapedValue = `'${value.replace(/'/g, "'\\''")}'`;
-    this.exec("storage", ["local", "set", key, escapedValue]);
+    this.exec("storage", ["local", "set", key, value]);
   }
 
   /**
    * Set sessionStorage value
    */
   async setSessionStorage(key: string, value: string): Promise<void> {
-    // Escape special shell characters
-    const escapedValue = `'${value.replace(/'/g, "'\\''")}'`;
-    this.exec("storage", ["session", "set", key, escapedValue]);
+    this.exec("storage", ["session", "set", key, value]);
   }
 
   /**
@@ -542,15 +565,48 @@ export class BrowserAgent {
       title = "";
     }
 
+    let snapshotError: string | null = null;
     try {
       snapshotData = await this.snapshotJson();
-    } catch {
-      // Try plain snapshot as fallback
+    } catch (jsonErr: any) {
+      // A heavy page can make the full interactive snapshot time out. Try the
+      // compact form next — it drops empty structural nodes and is far
+      // smaller, so it often succeeds where the full one does not.
+      // retries=0 on every fallback. exec() otherwise makes 3 attempts at the
+      // configured timeout each, and this chain has four links — a page whose
+      // snapshot fails then costs ~10 minutes of wall clock instead of
+      // failing fast and letting the agent move on.
       try {
-        const plainSnapshot = await this.snapshot();
-        snapshotData = { snapshot: plainSnapshot, refs: {} };
+        const compact = this.exec("snapshot", ["-i", "-c"], 0);
+        if (!compact.trim()) throw new Error("compact snapshot was empty");
+        snapshotData = { snapshot: compact, refs: {} };
+      } catch (compactErr: any) {
+        try {
+          const plainSnapshot = this.exec("snapshot", [], 0);
+          snapshotData = { snapshot: plainSnapshot, refs: {} };
+        } catch (plainErr: any) {
+          // Report why rather than returning a bare sentence the caller cannot
+          // distinguish from a genuinely empty page.
+          snapshotError =
+            plainErr?.message || compactErr?.message || jsonErr?.message || "unknown error";
+          snapshotData = { snapshot: "", refs: {} };
+        }
+      }
+    }
+
+    // The interactive snapshot carries refs but no body copy, so on a
+    // content-heavy page (a feed, an article, search results) it can come back
+    // with plenty of buttons and nothing readable. When that happens, fall
+    // back to the full snapshot so the caller isn't left flying blind and
+    // guessing which ref is which.
+    if (!snapshotData.snapshot || snapshotData.snapshot.trim() === "") {
+      try {
+        const full = this.exec("snapshot", [], 0);
+        if (full.trim()) {
+          snapshotData = { snapshot: full, refs: snapshotData.refs };
+        }
       } catch {
-        snapshotData = { snapshot: "Unable to get page snapshot", refs: {} };
+        // Keep whatever we already had.
       }
     }
 
@@ -559,6 +615,7 @@ export class BrowserAgent {
       title,
       snapshot: snapshotData.snapshot,
       refs: snapshotData.refs,
+      ...(snapshotError ? { error: snapshotError } : {}),
     };
   }
 

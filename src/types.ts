@@ -158,6 +158,8 @@ export interface BrowserState {
   title: string;
   snapshot: string;
   refs: Record<string, RefInfo>;
+  /** Set when the snapshot could not be captured, with the underlying reason. */
+  error?: string;
 }
 
 export interface RefInfo {
