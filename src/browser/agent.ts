@@ -4,6 +4,16 @@ import path from "path";
 import { BrowserConfig, BrowserState, RefInfo } from "../types.js";
 import { createBrowserbaseSession } from "./browserbase.js";
 
+// Fingerprint-evasion script injected via `agent-browser --init-script` when
+// `config.stealth` is enabled. Lives alongside the compiled agent.js.
+const STEALTH_SCRIPT_PATH = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "stealth-init.js"
+);
+
+// Chromium launch flag automation-detection scripts key off of.
+const STEALTH_ARG = "--disable-blink-features=AutomationControlled";
+
 // Cap on agent-browser stdout. Full-page snapshots of large SPAs run to
 // several MB; Node's 1MB execSync default truncated them mid-JSON.
 const MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
@@ -34,6 +44,45 @@ export class BrowserAgent {
       viewport: { width: 1280, height: 720 },
       ...config,
     };
+  }
+
+  /** Chromium launch args, including the stealth flag when enabled. */
+  private launchArgList(): string[] {
+    const args = new Set(this.config.args || []);
+    // A headless browser has no window, so any sound it makes (a video, a
+    // game) comes out of the speakers with nothing on screen to explain it.
+    // Muted unless asked for. Headed browsers keep their sound.
+    if (this.config.headless !== false && !this.config.audio) args.add("--mute-audio");
+    if (this.config.stealth) {
+      args.add(STEALTH_ARG);
+    }
+    return Array.from(args);
+  }
+
+  /**
+   * Launch options as CLI flags for `open`.
+   *
+   * These have to go on the command line rather than through AGENT_BROWSER_*
+   * env vars: agent-browser ignores/mishandles those when launching headed,
+   * which strands the browser on about:blank (or chrome-error with a
+   * profile). The CLI flags work in both modes, so they are always used.
+   */
+  private launchFlags(): string[] {
+    const flags: string[] = [];
+    if (this.config.profile) {
+      flags.push("--profile", this.config.profile);
+    }
+    if (this.config.userAgent) {
+      flags.push("--user-agent", this.config.userAgent);
+    }
+    if (this.config.stealth) {
+      flags.push("--init-script", STEALTH_SCRIPT_PATH);
+    }
+    const args = this.launchArgList();
+    if (args.length > 0) {
+      flags.push("--args", args.join(","));
+    }
+    return flags;
   }
 
   /**
@@ -67,20 +116,32 @@ export class BrowserAgent {
     // "&" in a URL would cut it short. Only used for display below.
     const fullCommand = ["agent-browser", command, ...args].join(" ");
 
-    // Set up environment with executable path if configured
+    // Launch options are passed as CLI flags on `open` (see launchFlags()).
+    // They are ALSO exported as AGENT_BROWSER_* env vars, but only in headless
+    // mode: agent-browser does not apply those env vars correctly when it
+    // launches headed — any of AGENT_BROWSER_ARGS / _PROFILE / _USER_AGENT
+    // leaves the browser stranded on about:blank or chrome-error. In headless
+    // they work, and they usefully cover the case where a command other than
+    // `open` is what auto-launches the browser.
     const env = { ...process.env };
-    if (this.config.executablePath) {
-      env.AGENT_BROWSER_EXECUTABLE_PATH = this.config.executablePath;
-    }
-    if (this.config.profile) {
-      env.AGENT_BROWSER_PROFILE = this.config.profile;
-    }
-    if (this.config.userAgent) {
-      env.AGENT_BROWSER_USER_AGENT = this.config.userAgent;
-    }
-    if (this.config.args && this.config.args.length > 0) {
-      // agent-browser expects comma or newline separated args via environment
-      env.AGENT_BROWSER_ARGS = this.config.args.join(",");
+    if (this.config.headless !== false) {
+      if (this.config.executablePath) {
+        env.AGENT_BROWSER_EXECUTABLE_PATH = this.config.executablePath;
+      }
+      if (this.config.profile) {
+        env.AGENT_BROWSER_PROFILE = this.config.profile;
+      }
+      if (this.config.userAgent) {
+        env.AGENT_BROWSER_USER_AGENT = this.config.userAgent;
+      }
+      if (this.config.stealth) {
+        env.AGENT_BROWSER_INIT_SCRIPTS = STEALTH_SCRIPT_PATH;
+      }
+      const launchArgs = this.launchArgList();
+      if (launchArgs.length > 0) {
+        // agent-browser expects comma or newline separated args via environment
+        env.AGENT_BROWSER_ARGS = launchArgs.join(",");
+      }
     }
 
     let lastError: Error | null = null;
@@ -190,6 +251,8 @@ export class BrowserAgent {
   }
 
   private hasInitialized = false;
+  /** Guards the one-time stealth User-Agent relaunch (see navigate()). */
+  private uaFixupDone = false;
   /** CDP URL for Browserbase remote sessions — set once, reused for the lifetime of the task. */
   private browserbaseCdpUrl: string | null = null;
   private browserbaseSessionId: string | null = null;
@@ -216,17 +279,34 @@ export class BrowserAgent {
     const args: string[] = [];
 
     // On first navigation, close any existing browser to apply our settings
-    // This ensures headed mode and executable path are applied correctly
+    // This ensures headed mode, executable path, and stealth init scripts are
+    // applied correctly — a daemon left running by an earlier call was launched
+    // without them, and they can only be registered before the first navigation
     if (
       !this.hasInitialized &&
-      (this.config.headless === false || this.config.executablePath)
+      (this.config.headless === false ||
+        this.config.executablePath ||
+        this.config.stealth)
     ) {
+      // Only worth doing if a browser is actually running. On a fresh run
+      // there is nothing to reconfigure, and closing anyway costs a visible
+      // window flashing shut plus a relaunch that races the profile lock when
+      // a persistent profile is in use.
+      let alreadyRunning = false;
       try {
-        this.exec("close", []);
-        // Give daemon time to fully shut down before reopening
-        this.sleep(1000);
+        this.exec("get", ["url"], 0);
+        alreadyRunning = true;
       } catch {
-        // Ignore if no browser to close
+        alreadyRunning = false;
+      }
+      if (alreadyRunning) {
+        try {
+          this.exec("close", []);
+          // Give daemon time to fully shut down before reopening
+          this.sleep(1000);
+        } catch {
+          // Ignore if no browser to close
+        }
       }
       this.hasInitialized = true;
     }
@@ -240,10 +320,45 @@ export class BrowserAgent {
       args.push("--executable-path", this.config.executablePath);
     }
 
-    const doOpen = () => this.exec("open", [url, ...args]);
+    const doOpen = () => this.exec("open", [url, ...args, ...this.launchFlags()]);
 
     doOpen();
     this.isOpen = true;
+
+    // Stealth: a headless browser advertises "HeadlessChrome" in its
+    // User-Agent — the loudest automation signal there is. Patching it from a
+    // page script isn't enough (the UA is also an HTTP request header, and a
+    // header/JS mismatch is its own tell), so relaunch once with the
+    // de-headlessed string. Runs before the about:blank check below so that
+    // loop verifies the relaunched page too.
+    //
+    // Only in headless mode: a headed browser never reports "HeadlessChrome",
+    // so there the probe could never do anything except put an extra command
+    // between `open` and the page being ready.
+    //
+    // The probe passes retries=0 deliberately. exec()'s retry path closes the
+    // browser when it sees "Browser not launched", so letting this speculative
+    // read retry would mean a transient error right after `open` tears down a
+    // perfectly good (and, in headed mode, user-visible) browser.
+    if (
+      this.config.stealth &&
+      this.config.headless !== false &&
+      !this.config.userAgent &&
+      !this.uaFixupDone
+    ) {
+      this.uaFixupDone = true;
+      try {
+        const ua = JSON.parse(this.exec("eval", ["navigator.userAgent"], 0));
+        if (typeof ua === "string" && ua.includes("HeadlessChrome")) {
+          this.config.userAgent = ua.replace("HeadlessChrome", "Chrome");
+          this.exec("close", []);
+          this.sleep(1000);
+          doOpen();
+        }
+      } catch {
+        // Couldn't read or apply the UA — carry on with the JS-level patches.
+      }
+    }
 
     // If we're stuck on about:blank (e.g. daemon in bad state), retry open
     const maxNavigateRetries = 2;

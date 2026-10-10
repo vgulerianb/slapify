@@ -50,6 +50,8 @@ export interface TelegramConfig {
 }
 
 export interface BrowserConfig {
+  /** Let a headless browser play sound. Off by default: headless is muted. */
+  audio?: boolean;
   headless?: boolean;
   timeout?: number;
   viewport?: {
@@ -63,6 +65,12 @@ export interface BrowserConfig {
   userAgent?: string;
   /** Array of Chromium launch args (e.g. ['--disable-blink-features=AutomationControlled']) */
   args?: string[];
+  /**
+   * Patch common automation fingerprints (navigator.webdriver, missing
+   * window.chrome, empty plugins/languages, WebGL vendor strings, etc.)
+   * before any page script runs. Helps pass basic bot-detection checks.
+   */
+  stealth?: boolean;
   browserbase?: {
     api_key: string;
     project_id?: string;

@@ -223,10 +223,18 @@ ${llmConfig}
 # Browser Automation Settings
 ${browserConfig}
   # Anti-Bot Stealth & Persistence
+  # Hides automation fingerprints: adds
+  # --disable-blink-features=AutomationControlled (which is what actually makes
+  # navigator.webdriver report false), strips "HeadlessChrome" from the
+  # User-Agent, and patches page-level fingerprints only where the real value
+  # is itself a tell — every patch is detectable, so one that replaces an
+  # already-realistic value is a net loss. See the README for details.
+  stealth: true
   profile: ".slapify/browser-profile"
-  userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+  # No userAgent pinned on purpose: stealth mode derives it from the real
+  # browser, so it can't drift out of date. Set one only to override.
+  # userAgent: "Mozilla/5.0 (...) Chrome/140.0.0.0 Safari/537.36"
   args:
-    - "--disable-blink-features=AutomationControlled"
     - "--no-sandbox"
 # To use Browserbase cloud browsers instead of local (stealth, scalable, no install):
 #   browser:

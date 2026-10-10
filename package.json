@@ -15,7 +15,7 @@
     "bin"
   ],
   "scripts": {
-    "build": "tsc && cp -r src/task/rules dist/task/rules",
+    "build": "tsc && rm -rf dist/task/rules && cp -r src/task/rules dist/task/rules && cp src/browser/stealth-init.js dist/browser/stealth-init.js",
     "dev": "tsc --watch",
     "start": "node dist/index.js",
     "lint": "tsc --noEmit",

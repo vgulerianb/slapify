@@ -1044,6 +1044,7 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
     goal,
     sessionId,
     headed,
+    stealth,
     executablePath,
     saveFlow,
     flowOutputDir,
@@ -1098,6 +1099,7 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
     profile: config.browser?.profile,
     userAgent: config.browser?.userAgent,
     args: config.browser?.args,
+    stealth: stealth ?? config.browser?.stealth,
   });
 
   // Set up or resume session

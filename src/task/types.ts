@@ -81,6 +81,8 @@ export interface TaskRunOptions {
   goal: string;
   sessionId?: string;
   headed?: boolean;
+  /** Override browser.stealth from config (undefined = use config). */
+  stealth?: boolean;
   executablePath?: string;
   saveFlow?: boolean;
   /** Directory to write the .flow file into (default: cwd) */

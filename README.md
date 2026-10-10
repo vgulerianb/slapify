@@ -80,6 +80,8 @@ npx slapify task "..." --headed            # show the browser window
 npx slapify task "..." --debug             # verbose logs
 npx slapify task "..." --save-flow         # save steps as a reusable .flow file
 npx slapify task "..." --max-iterations N  # cap agent loop iterations (default 400)
+npx slapify task "..." --stealth           # hide automation fingerprints (overrides config)
+npx slapify task "..." --no-stealth        # force stealth off even if config enables it
 npx slapify task "..." --schema <json> --output <file>  # structured JSON output (see below)
 ```
 
@@ -477,6 +479,47 @@ Instead of relying solely on `credentials.yaml`, you can configure the browser t
 
 See the `browser.profile` setting in the Configuration section below.
 
+### Stealth Mode
+
+Set `browser.stealth: true` to hide the automation fingerprints that bot-detection services commonly check for. It does three things:
+
+1. Adds `--disable-blink-features=AutomationControlled` to the Chromium launch args.
+2. Strips `HeadlessChrome` from the User-Agent, if the browser advertises it and you haven't set `browser.userAgent` yourself. This happens at launch (one extra relaunch on first navigation) so the HTTP header and `navigator.userAgent` always agree — patching only the JS value would be its own tell.
+3. Injects a fingerprint script into every frame before any page script runs.
+
+The injected script follows one rule: **patch nothing that isn't already a tell.**
+
+Serious fingerprinters don't check values, they check for *patching*. CreepJS compares built-ins against pristine copies pulled from a fresh iframe realm, inspects stack traces to catch a cloaked `Function.prototype.toString`, and walks property descriptors looking for getters that aren't native. So every patch is a detection candidate in its own right, and one that replaces an already-realistic value is a pure loss. Injected script can't reach a Web Worker either, so spoofing a value workers also expose just creates a main-thread-vs-worker mismatch — a *stronger* signal than what it replaced.
+
+Each patch is therefore gated on the underlying value actually looking automated:
+
+| Fingerprint | Patched only when |
+| --- | --- |
+| `navigator.webdriver` | it still reports `true` — normally it doesn't, because the launch flag above makes Chromium report `false` natively. Patched to `false`, not `undefined`: the property is specified to exist |
+| `window.chrome` | missing entirely |
+| `navigator.plugins` / `mimeTypes` | the list is empty — rebuilt on the real `PluginArray`/`Plugin` prototypes, which detectors check |
+| `navigator.languages` | the list is empty |
+| WebGL vendor/renderer | the real renderer is a software rasteriser (SwiftShader, llvmpipe, Mesa offscreen). Probed up front, so no wrapper is installed on a machine with a real GPU |
+
+`navigator.permissions.query` is deliberately **not** patched, though stealth libraries commonly do: the `denied`/`default` mismatch it fixes doesn't exist in current Chrome, and it can only be detected asynchronously — so the patch would have to wrap a native method on every page just in case.
+
+If any patch does apply, `Function.prototype.toString` is cloaked so the patched getters report `[native code]`. That cloak is installed *only* if something was patched, since the cloak is itself detectable via stack traces. On a current Chrome the whole script ends up a no-op.
+
+Combine it with `browser.profile` for the best results — a persistent profile with real history plus a clean fingerprint.
+
+**What it does and doesn't get you.** Measured on macOS, headless Chrome 152, stealth off → on:
+
+| Test | Off | On |
+| --- | --- | --- |
+| [bot.sannysoft.com](https://bot.sannysoft.com) | 4 failures (`User Agent`, `WebDriver`, `HEADCHR_UA`, `CHR_MEMORY`) | **0 failures** |
+| [CreepJS](https://abrahamjuliot.github.io/creepjs/) headless score | 100% | **33%** |
+| CreepJS *stealth* score | 0% | **0%** — same fingerprint hash as an unpatched browser |
+| [nowsecure.nl](https://nowsecure.nl) (live Cloudflare) | passes | passes |
+
+The 0% stealth score is the point: there's nothing for a fingerprinter to catch, because on a modern browser stealth mode changes launch flags rather than patching JavaScript.
+
+It is still not invisible — CreepJS puts it at 33% headless. What remains is out of reach of anything a page script can do: `Sec-CH-UA` client-hint headers still identify the browser as headless, and Worker scopes, timing and GPU behaviour still differ. Closing those means moving below the JS layer entirely — patching and rebuilding the browser engine, as [invisible_playwright](https://github.com/feder-cr/invisible_playwright) does — or renting real hardware browsers via `browser.browserbase`. And only automate sites you're authorized to test.
+
 ---
 
 ## Configuration
@@ -501,10 +544,11 @@ browser:
     width: 1280
     height: 720
   # Anti-Bot Stealth & Persistence
+  stealth: true
   profile: ".slapify/browser-profile"
-  userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+  # userAgent is derived from the real browser when stealth is on — pin one
+  # only to override it, since a pinned string drifts out of date.
   args:
-    - "--disable-blink-features=AutomationControlled"
     - "--no-sandbox"
 
 report:

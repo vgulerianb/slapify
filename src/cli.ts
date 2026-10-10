@@ -1668,6 +1668,8 @@ program
     '    slapify task "Order breakfast from Swiggy every day at 8am"'
   )
   .option("--headed", "Show the browser window")
+  .option("--stealth", "Hide automation fingerprints (overrides browser.stealth)")
+  .option("--no-stealth", "Disable stealth even if browser.stealth is set")
   .option("--debug", "Show all tool calls and internal steps")
   .option("--report", "Generate an HTML report after the task completes")
   .option("--save-flow", "Save agent steps as a reusable .flow file when done")
@@ -2026,6 +2028,7 @@ program
         goal: taskGoal!,
         sessionId: options.session,
         headed: options.headed,
+        stealth: options.stealth,
         saveFlow: options.saveFlow,
         maxIterations: options.maxIterations,
         schema: parsedSchema,
