@@ -2090,20 +2090,18 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
     telegram.sendMessage(`🚀 *Slapify Task Started*\n\nGoal: _${goal}_`).catch(() => { });
   }
 
-  // Set up browser
+  // Set up browser. All of `browser:` applies (browserbase and audio
+  // included), as it does for flows and `slapify fast`; options passed to
+  // the run override their config counterparts.
   const browser = new BrowserAgent({
+    ...(config.browser || {}),
     headless:
       headed === true
         ? false
         : headed === false
           ? true
           : config.browser?.headless ?? true,
-    timeout: config.browser?.timeout,
-    viewport: config.browser?.viewport,
     executablePath: executablePath || config.browser?.executablePath,
-    profile: config.browser?.profile,
-    userAgent: config.browser?.userAgent,
-    args: config.browser?.args,
     stealth: stealth ?? config.browser?.stealth,
   });
 
@@ -2753,16 +2751,6 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
             result: resultStr.slice(0, 200),
           });
 
-          if (toolName === "done") {
-            isDone = true;
-            doneSummary = JSON.stringify(toolResult, null, 2);
-            if (telegram) {
-              await telegram.sendMessage(`✅ *Task Completed*\n\n\`\`\`json\n${doneSummary}\n\`\`\``);
-            }
-          }
-
-
-
           // Pull the screenshot bytes off the result (if any) before it gets
           // serialised — base64 must travel as an image part, never as text.
           const visionImage = takeVisionImage(toolResult);
@@ -2876,7 +2864,17 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
     } else if (session.iteration >= maxIterations && !isDone) {
       doneSummary = `Task hit the maximum iteration limit (${maxIterations}) without completing.`;
       updateSessionStatus(session, "failed");
-    } else if (isDone) {
+    }
+
+    // How the run ended. Sent here, once the outcome is known: done() is
+    // handled before any tool runs, so a send in the tool loop never fired.
+    // Before the scheduled jobs below, which keep the process alive for good.
+    if (telegram) {
+      const heading = session.status === "failed" ? "❌ *Task Failed*" : "✅ *Task Completed*";
+      await telegram.sendMessage(`${heading}\n\n${doneSummary}`).catch(() => { });
+    }
+
+    if (isDone) {
       // If there are scheduled jobs, keep alive
       if (session.scheduledJobs.length > 0) {
         await startScheduledJobs(session, options, credentials, config, emit);

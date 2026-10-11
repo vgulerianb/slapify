@@ -73,16 +73,23 @@ export class TelegramService {
             return; // Nowhere to send
         }
 
-        try {
-            await fetch(`https://api.telegram.org/bot${this.botToken}/sendMessage`, {
+        const send = (markdown: boolean) =>
+            fetch(`https://api.telegram.org/bot${this.botToken}/sendMessage`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     chat_id: targetChatId,
                     text,
-                    parse_mode: "Markdown",
+                    ...(markdown ? { parse_mode: "Markdown" } : {}),
                 }),
             });
+
+        try {
+            const res = await send(true);
+            // Model-written text (a summary, a status update) often has an
+            // unpaired * or _, which Telegram rejects as bad Markdown with a
+            // 400, and the message was silently lost. Send it as plain text.
+            if (res.status === 400) await send(false);
         } catch (e) {
             console.error("[Telegram] Failed to send message:", e);
         }

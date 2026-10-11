@@ -113,11 +113,20 @@ export function loadCredentials(configDir?: string): CredentialsConfig {
     return { profiles: {} };
   }
 
-  const content = fs.readFileSync(credentialsPath, "utf-8");
-  const credentials = yaml.parse(content) as CredentialsConfig;
+  return loadCredentialsFile(credentialsPath);
+}
+
+/**
+ * Load credential profiles from a specific file, in the same format as
+ * .slapify/credentials.yaml (`slapify run --credentials <file>`).
+ */
+export function loadCredentialsFile(filePath: string): CredentialsConfig {
+  const content = fs.readFileSync(filePath, "utf-8");
+  // An empty file parses to null; treat it as no profiles.
+  const credentials = (yaml.parse(content) || {}) as CredentialsConfig;
 
   // Replace environment variables
-  return replaceEnvVars(credentials) as CredentialsConfig;
+  return { profiles: {}, ...replaceEnvVars(credentials) } as CredentialsConfig;
 }
 
 export interface InitOptions {

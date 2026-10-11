@@ -10,6 +10,7 @@ import dotenv from "dotenv";
 import {
   loadConfig,
   loadCredentials,
+  loadCredentialsFile,
   initConfig,
   getConfigDir,
 } from "./config/loader.js";
@@ -31,7 +32,7 @@ import { createMistral } from "@ai-sdk/mistral";
 import { createGroq } from "@ai-sdk/groq";
 import { createClaudeCliModel } from "./ai/claude-cli.js";
 import { createCodexModel, listCodexModels, DEFAULT_CODEX_MODEL } from "./ai/codex.js";
-import { LLMConfig, CredentialProfile } from "./types.js";
+import { LLMConfig, CredentialProfile, CredentialsConfig } from "./types.js";
 import yaml from "yaml";
 
 // Load environment variables
@@ -745,7 +746,7 @@ program
   .option("--headed", "Run browser in headed mode (visible)")
   .option("--report [format]", "Generate report folder (html, markdown, json)")
   .option("--output <dir>", "Output directory for reports", "./test-reports")
-  .option("--credentials <profile>", "Default credentials profile to use")
+  .option("--credentials <file>", "Credentials file to use instead of .slapify/credentials.yaml")
   .option("-p, --parallel", "Run tests in parallel")
   .option("-w, --workers <n>", "Number of parallel workers (default: 4)", "4")
   .option(
@@ -764,7 +765,21 @@ program
       }
 
       const config = loadConfig(configDir);
-      const credentials = loadCredentials(configDir);
+      let credentials: CredentialsConfig;
+      if (options.credentials) {
+        const credentialsPath = path.resolve(options.credentials);
+        if (!fs.existsSync(credentialsPath)) {
+          console.log(chalk.red(`Credentials file not found: ${options.credentials}`));
+          process.exit(1);
+        }
+        credentials = loadCredentialsFile(credentialsPath);
+        const count = Object.keys(credentials.profiles || {}).length;
+        console.log(
+          chalk.gray(`  Using credentials from ${options.credentials} (${count} profile${count === 1 ? "" : "s"})`)
+        );
+      } else {
+        credentials = loadCredentials(configDir);
+      }
 
       // Apply CLI options
       if (options.headed) {
@@ -811,6 +826,17 @@ program
       const workers = parseInt(options.workers) || 4;
 
       if (isParallel) {
+        // The audit's lab scores come from a separate Chrome run after each
+        // flow's browser closes, so that only one Chrome is busy at a time.
+        // Parallel flows would run several at once and skew the scores.
+        if (options.performance) {
+          console.log(
+            chalk.yellow(
+              "\n⚠ --performance is not supported with --parallel, so no performance audit will run. Drop --parallel to include one."
+            )
+          );
+        }
+
         // Parallel execution
         console.log(
           chalk.blue.bold(
