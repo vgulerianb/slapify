@@ -178,6 +178,8 @@ class ToolExecutor {
   private browser: BrowserAgent;
   private session: TaskSession;
   private credentials: Record<string, CredentialProfile>;
+  /** One-time codes handed out by get_otp this run, so they can be scrubbed from logs. */
+  private issuedCodes = new Set<string>();
   private emit: (event: TaskEvent) => void;
   private onHumanInput: (q: string, hint?: string) => Promise<string>;
   private credentialsFilePath: string;
@@ -242,6 +244,20 @@ class ToolExecutor {
       } catch { }
       this.wreqSession = null;
     }
+  }
+
+  /**
+   * Every secret value this run could leak into a log: profile passwords,
+   * fixed one-time codes and codes issued by get_otp. Short values are left
+   * out so ordinary words aren't scrubbed.
+   */
+  secrets(): string[] {
+    const out = new Set<string>(this.issuedCodes);
+    for (const p of Object.values(this.credentials)) {
+      if (p.password) out.add(String(p.password));
+      if (p.fixed_otp) out.add(String(p.fixed_otp));
+    }
+    return [...out].filter((v) => v.length >= 4);
   }
 
   /** URL of the page the agent is on, as last reported by a tool. */
@@ -870,7 +886,7 @@ class ToolExecutor {
           const otp = (await oneTimeCode(profile, OTP_MIN_VALID_SECONDS))!;
           return {
             ok: true,
-            code: otp.code,
+            code: (this.issuedCodes.add(otp.code), otp.code),
             ...(otp.expiresInSeconds !== undefined ? { expires_in_seconds: otp.expiresInSeconds } : {}),
             hint: "Type it into the one-time code field now and submit. If the site rejects it, call get_otp again for a fresh code.",
           };
@@ -1077,7 +1093,10 @@ class ToolExecutor {
                   if (parsed?.profiles) existing = parsed;
                 } catch { }
               }
-              existing.profiles[profileName] = profile;
+              const prev = existing.profiles[profileName];
+              const merged: CredentialProfile =
+                prev && prev.type === profile.type ? { ...prev, ...profile } : profile;
+              existing.profiles[profileName] = merged;
               fs.mkdirSync(path.dirname(this.credentialsFilePath), {
                 recursive: true,
               });
@@ -1085,7 +1104,7 @@ class ToolExecutor {
                 this.credentialsFilePath,
                 yaml.stringify(existing, { indent: 2, lineWidth: 0 })
               );
-              this.credentials[profileName] = profile;
+              this.credentials[profileName] = merged;
               this.emit({
                 type: "credentials_saved",
                 profileName,
@@ -1160,7 +1179,13 @@ class ToolExecutor {
               if (parsed?.profiles) existing = parsed;
             } catch { }
           }
-          existing.profiles[profileName] = profile;
+          // Merge into an existing profile of the same type, so re-saving after a
+          // login keeps what this call didn't set (a password, totp_secret,
+          // fixed_otp) instead of wiping it.
+          const prev = existing.profiles[profileName];
+          const merged: CredentialProfile =
+            prev && prev.type === profile.type ? { ...prev, ...profile } : profile;
+          existing.profiles[profileName] = merged;
           fs.mkdirSync(path.dirname(this.credentialsFilePath), {
             recursive: true,
           });
@@ -1168,7 +1193,7 @@ class ToolExecutor {
             this.credentialsFilePath,
             yaml.stringify(existing, { indent: 2, lineWidth: 0 })
           );
-          this.credentials[profileName] = profile;
+          this.credentials[profileName] = merged;
           this.emit({ type: "credentials_saved", profileName, credType });
           return {
             ok: true,
@@ -1833,7 +1858,32 @@ export function forLog(toolName: string, result: unknown): unknown {
   if (toolName === "get_otp" && result && typeof result === "object" && "code" in result) {
     return { ...(result as object), code: "[redacted]" };
   }
+  if (toolName === "fill_login_form" && result && typeof result === "object" && "password" in result) {
+    return { ...(result as object), password: "[redacted]" };
+  }
   return result;
+}
+
+/**
+ * Replace every occurrence of a known secret in a value bound for a log or a
+ * progress event: the password the agent types into a field shows up in the
+ * type() call's args, not just in fill_login_form's result.
+ */
+export function redactSecrets<T>(value: T, secrets: string[]): T {
+  if (!secrets.length) return value;
+  const scrub = (v: unknown): unknown => {
+    if (typeof v === "string") {
+      let out = v;
+      for (const sec of secrets) if (out.includes(sec)) out = out.split(sec).join("[redacted]");
+      return out;
+    }
+    if (Array.isArray(v)) return v.map(scrub);
+    if (v && typeof v === "object") {
+      return Object.fromEntries(Object.entries(v as Record<string, unknown>).map(([k, x]) => [k, scrub(x)]));
+    }
+    return v;
+  };
+  return scrub(value) as T;
 }
 
 /** Tools whose results are large enough to be worth dropping once stale. */
@@ -2589,7 +2639,7 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
             error: "This task is persistent: it runs until a human stops it, so done() is not available.",
             do_next: "Finish the current cycle with status_update(), then sleep_until() and start the next one.",
           };
-          appendEvent(session.id, { type: "tool_call", toolName, args, result: refused, ts: new Date().toISOString() });
+          appendEvent(session.id, redactSecrets({ type: "tool_call" as const, toolName, args, result: refused, ts: new Date().toISOString() }, executor.secrets()));
           toolResultContent.push({ type: "tool-result", toolCallId: tc.toolCallId, toolName, result: JSON.stringify(refused) });
           continue;
         }
@@ -2620,7 +2670,7 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
           appendEvent(session.id, {
             type: "tool_call",
             toolName,
-            args: args as Record<string, unknown>,
+            args: redactSecrets(args as Record<string, unknown>, executor.secrets()),
             result: { ok: true },
             ts: new Date().toISOString(),
           });
@@ -2640,7 +2690,7 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
               error: `Unknown ref ${args.ref}: it is from an older snapshot or from before a restart, and no longer exists.`,
               do_next: "Get fresh refs with find_element() or get_page_state() on the current page, then try again.",
             };
-            appendEvent(session.id, { type: "tool_call", toolName, args, result: stale, ts: new Date().toISOString() });
+            appendEvent(session.id, redactSecrets({ type: "tool_call" as const, toolName, args, result: stale, ts: new Date().toISOString() }, executor.secrets()));
             toolResultContent.push({
               type: "tool-result",
               toolCallId: tc.toolCallId,
@@ -2661,7 +2711,7 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
           appendEvent(session.id, {
             type: "tool_call",
             toolName,
-            args,
+            args: redactSecrets(args, executor.secrets()),
             result: admitted.heldResult,
             ts: new Date().toISOString(),
           });
@@ -2702,13 +2752,13 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
                 .sendMessage(`🛑 *Held for review* (${verdict.outcome})\n${description}${executor.lastTyped ? `\n\n_${executor.lastTyped.slice(0, 300)}_` : ""}`)
                 .catch(() => { });
             }
-            appendEvent(session.id, { type: "tool_call", toolName, args, result: held, ts: new Date().toISOString() });
+            appendEvent(session.id, redactSecrets({ type: "tool_call" as const, toolName, args, result: held, ts: new Date().toISOString() }, executor.secrets()));
             toolResultContent.push({ type: "tool-result", toolCallId: tc.toolCallId, toolName, result: JSON.stringify(held) });
             continue;
           }
         }
 
-        emit({ type: "tool_start", toolName, args });
+        emit({ type: "tool_start", toolName, args: redactSecrets(args, executor.secrets()) });
         if (!process.env.SLAPIFY_DEBUG_AI) {
           // Provide visible feedback even without full debug mode
           process.stdout.write(chalk.dim(`  🔧 ${toolName}...\r`));
@@ -2732,11 +2782,12 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
           );
           if (guidance) toolResult = withGuidance(toolResult, guidance);
 
-          const logged = forLog(toolName, toolResult);
+          const secrets = executor.secrets();
+          const logged = redactSecrets(forLog(toolName, toolResult), secrets);
           appendEvent(session.id, {
             type: "tool_call",
             toolName,
-            args,
+            args: redactSecrets(args, secrets),
             result: logged,
             ts: new Date().toISOString(),
           });

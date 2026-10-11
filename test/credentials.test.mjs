@@ -279,3 +279,22 @@ test("task mode: inject profiles scope cookies to their domain and path", async 
     server.stop();
   }
 });
+
+// ── Secrets never reach the session log ───────────────────────────────────
+test("known secrets are scrubbed from logged args and results, however deep", async () => {
+  const { redactSecrets, forLog } = await import(dist("task/runner.js"));
+  const secrets = ["hunter2-pass", "424242"];
+  const logged = redactSecrets(
+    { toolName: "type", args: { ref: "e7", text: "hunter2-pass" }, result: { note: "typed hunter2-pass, code 424242", list: ["424242"] } },
+    secrets
+  );
+  assert.equal(logged.args.text, "[redacted]");
+  assert.equal(logged.result.note, "typed [redacted], code [redacted]");
+  assert.deepEqual(logged.result.list, ["[redacted]"]);
+  assert.equal(logged.args.ref, "e7");
+  // Nothing to scrub: the value comes back untouched.
+  const plain = { a: 1 };
+  assert.equal(redactSecrets(plain, []), plain);
+  // fill_login_form's password field is redacted even before the scrubber runs.
+  assert.equal(forLog("fill_login_form", { ok: true, username: "me", password: "x" }).password, "[redacted]");
+});
