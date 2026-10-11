@@ -83,7 +83,14 @@ npx slapify task "..." --max-iterations N  # cap agent loop iterations (default 
 npx slapify task "..." --stealth           # hide automation fingerprints (overrides config)
 npx slapify task "..." --no-stealth        # force stealth off even if config enables it
 npx slapify task "..." --schema <json> --output <file>  # structured JSON output (see below)
+
+# Sessions — every task run is a session with its own memory and event log
+npx slapify task --list-sessions           # list past and running sessions
+npx slapify task --logs <id>               # show the event log for a session
+npx slapify task "..." --session <id>      # resume a session, keeping its memory
 ```
+
+Resuming with `--session` restores the session's memory **and** its conversation history. That's usually what you want, but it means an instruction given earlier in that session (say, via Telegram) comes back with it. Start a fresh session when you want a clean slate.
 
 ### Server Mode (`slapify server`)
 
@@ -813,6 +820,55 @@ jev:
 ```
 
 `base_url`, `path` and `model` override the provider defaults (for a proxy, say); `min_confidence` (default 0.7) and `timeout_ms` (default 10000) tune it; and `use.tools`, `use.interruption_gate` and `use.verify_fast_path` switch individual integrations off. A misconfigured or unreachable Jev disables itself with a warning; the run carries on without it.
+
+---
+
+## Running long tasks unattended
+
+Tasks like "monitor this every 30 minutes" can run for days. Slapify recovers from most failures on its own:
+
+| Failure | What Slapify does |
+| --- | --- |
+| LLM call times out or the connection drops | Retries 3 times with backoff, then rotates to the next model in your `llm` list |
+| Model emits a tool call with missing arguments | Hands the validation error back and asks for a corrected call (up to 3 times) |
+| Tool-call JSON cut off mid-response | Repairs it and recovers the calls |
+| Page snapshot fails on a heavy page | Falls back to a compact snapshot, fails fast, tells the agent to move on |
+| Agent repeats the same failing action | Runs it, then adds guidance to the result telling it to change approach. Nothing is blocked |
+| Agent tries to post the same thing twice | The second identical irreversible action on the same page is held, not run |
+| Every model in the chain is rate-limited or out of quota | Waits patiently (1, 2, 4, then every 5 minutes) instead of exiting, and messages you on Telegram once after 10 minutes |
+| History grows past the context window | Compacts older turns into a summary, keeping the original goal word for word |
+| Anything else goes wrong in a turn | Records it, tells the agent what broke, continues. Only **5 failures in a row** end the run |
+
+What it can't catch is the process itself dying — an uncaught crash, running out of memory, the machine sleeping. For that, wrap it in a small supervisor that restarts it, backing off if it keeps failing immediately (a usage limit or expired login won't fix itself, and a tight restart loop just burns through retries):
+
+```bash
+#!/bin/bash
+# run.sh — restart slapify if it exits; give up if it keeps dying at startup
+BACKOFF=15; FAST_FAILS=0
+while true; do
+  STARTED=$(date +%s)
+  npx slapify task "$(cat goal.txt)" --max-iterations 999999
+  RAN_FOR=$(( $(date +%s) - STARTED ))
+
+  if [ "$RAN_FOR" -lt 60 ]; then
+    FAST_FAILS=$((FAST_FAILS + 1))
+    if [ "$FAST_FAILS" -ge 8 ]; then
+      echo "Keeps failing at startup — likely a usage limit or expired login. Stopping."
+      exit 1
+    fi
+    sleep "$BACKOFF"; BACKOFF=$(( BACKOFF * 2 > 600 ? 600 : BACKOFF * 2 ))
+  else
+    FAST_FAILS=0; BACKOFF=15; sleep 15
+  fi
+done
+```
+
+Other tips for long runs:
+
+- **Headless + a persistent profile + stealth** — `headless: true`, `profile: ".slapify/browser-profile"`, `stealth: true`. The login survives restarts and nothing needs a window.
+- **Keep memory values short.** Long `remember()` values make responses long enough to get cut off. One line per item is plenty; say so in your goal.
+- **Use `--persistent` for monitors and loops.** The agent can't end the task itself: `done()` is refused and a text-only reply counts as a pause. Each time it sleeps between cycles, the cycle's history is compacted, so a run can go for days without the context filling up.
+- **Put lasting rules in the goal, not in live messages.** A Telegram instruction applies to the cycle it arrives in. It carries forward only if you say it should ("from now on…").
 
 ---
 

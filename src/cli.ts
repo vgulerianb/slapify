@@ -1670,6 +1670,7 @@ program
   .option("--headed", "Show the browser window")
   .option("--stealth", "Hide automation fingerprints (overrides browser.stealth)")
   .option("--no-stealth", "Disable stealth even if browser.stealth is set")
+  .option("--persistent", "Run until stopped: the agent cannot end the task itself")
   .option("--time-limit <minutes>", "Stop the task after this many minutes, enforced by the harness", parseFloat)
   .option("--record <dir>", "Record the run: annotated frames, video.webm (with ffmpeg) and replay.html")
   .option("--live [port]", "With --record: watch the browser live at http://127.0.0.1:<port>/ (default 8790)")
@@ -1677,6 +1678,10 @@ program
   .option("--report", "Generate an HTML report after the task completes")
   .option("--save-flow", "Save agent steps as a reusable .flow file when done")
   .option("--session <id>", "Resume an existing task session")
+  .option(
+    "--memory-from <id>",
+    "Start a NEW session (with the goal given now) that inherits another session's memory. Unlike --session, the new goal applies."
+  )
   .option("--list-sessions", "List all task sessions")
   .option("--logs <id>", "Show logs for a task session")
   .option(
@@ -2034,11 +2039,25 @@ program
         }
       }
 
+      let inheritedMemory: Record<string, string> | undefined;
+      if (options.memoryFrom) {
+        const { loadSession } = await import("./task/index.js");
+        const from = loadSession(options.memoryFrom);
+        if (!from) {
+          console.error(chalk.red(`Session '${options.memoryFrom}' not found.`));
+          process.exit(1);
+        }
+        inheritedMemory = from.memory;
+        console.log(chalk.gray(`  Inheriting ${Object.keys(inheritedMemory).length} memory items from ${options.memoryFrom}`));
+      }
+
       const session = await runTask({
         goal: taskGoal!,
+        inheritedMemory,
         sessionId: options.session,
         headed: options.headed,
         stealth: options.stealth,
+        persistent: !!options.persistent,
         timeLimitMinutes: options.timeLimit,
         record: options.record,
         livePort: options.live === undefined ? undefined : options.live === true ? 8790 : Number(options.live),

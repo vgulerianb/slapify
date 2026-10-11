@@ -2246,6 +2246,10 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
   let doneSummary = "";
   let consecutiveIterationErrors = 0;
   let mangledFinishRetries = 0;
+  /** Consecutive prose-only replies in persistent mode. */
+  let idleReplies = 0;
+  /** Set when a persistent task sleeps: the cycle is over, compact after it. */
+  let cycleEnded = false;
 
   try {
     while (!isDone && session.iteration < maxIterations) {
@@ -2438,6 +2442,18 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
 
       // No tool calls = model is done thinking without acting
       if (!result.toolCalls || result.toolCalls.length === 0) {
+        if (persistent) {
+          // Never a finish. Nudge it back into the loop, and back off if it
+          // keeps replying in prose so a confused model can't burn the quota.
+          idleReplies++;
+          if (idleReplies >= 3) await new Promise((r) => setTimeout(r, 60_000));
+          messages.push({
+            role: "user",
+            content:
+              "[SYSTEM] This task is persistent and does not finish. Reply with tool calls, not prose: carry on with the current cycle, or call sleep_until() to wait for the next one.",
+          });
+          continue;
+        }
         if (result.finishReason === "stop") {
           // Guard: text that still contains tool-call JSON is a mangled or
           // truncated attempt to ACT, not a considered decision to finish.
@@ -2469,6 +2485,7 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
         continue;
       }
       mangledFinishRetries = 0;
+      idleReplies = 0;
 
       // ── ACT ────────────────────────────────────────────────────────────
       const toolResultContent: unknown[] = [];
@@ -2476,6 +2493,18 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
       for (const tc of result.toolCalls) {
         const toolName = tc.toolName as string;
         const args = tc.args as Record<string, unknown>;
+
+        // Persistent tasks never finish on the model's say-so.
+        if (toolName === "done" && persistent) {
+          const refused = {
+            ok: false,
+            error: "This task is persistent: it runs until a human stops it, so done() is not available.",
+            do_next: "Finish the current cycle with status_update(), then sleep_until() and start the next one.",
+          };
+          appendEvent(session.id, { type: "tool_call", toolName, args, result: refused, ts: new Date().toISOString() });
+          toolResultContent.push({ type: "tool-result", toolCallId: tc.toolCallId, toolName, result: JSON.stringify(refused) });
+          continue;
+        }
 
         // Check for done sentinel BEFORE executing
         if (toolName === "done") {
@@ -2605,6 +2634,8 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
           await telegram.sendMessage(`ℹ️ *Status update*:\n${args.message}`);
         }
 
+        if (persistent && toolName === "sleep_until") cycleEnded = true;
+
         let toolResult: unknown;
         try {
           toolResult = await executor.execute(toolName, args);
@@ -2697,6 +2728,19 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
 
       if (toolResultContent.length > 0) {
         messages.push({ role: "tool", content: toolResultContent });
+      }
+
+      // End of a cycle in a persistent task: start the next one from the goal
+      // plus a summary, not from an ever-growing transcript. Keeps each turn's
+      // cost flat however long the task runs, and live instructions from this
+      // cycle expire with it unless they were meant to last.
+      if (cycleEnded) {
+        cycleEnded = false;
+        const before = messages.length;
+        messages = await compactMessages(messages, model, session.id, 2);
+        if (messages.length < before) {
+          emit({ type: "message", text: `🧹 Cycle complete — history compacted (${before} → ${messages.length} messages)` });
+        }
       }
         // A completed iteration clears the failure streak.
         consecutiveIterationErrors = 0;

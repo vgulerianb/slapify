@@ -50,6 +50,11 @@ export function buildSystemPrompt(
         fragments.push(rule("jev.md"));
     }
 
+    // ── Persistent ────────────────────────────────────────────────────────────
+    if (persistent) {
+        fragments.push(rule("persistent.md"));
+    }
+
     // ── Monitoring / scheduling ────────────────────────────────────────────────
     // Detected whenever the task is meant to run repeatedly or watch for events.
     if (
