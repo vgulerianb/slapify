@@ -623,7 +623,7 @@ vision: true
 # Optional fast decision model (see "Jev")
 jev:
   enabled: true
-  provider: typesafe          # or vercel, openrouter
+  provider: typesafe          # or vercel, openrouter, openai (OpenAI Decisions)
   api_key: ${TYPESAFE_API_KEY}
 
 # Review irreversible actions against a policy before they happen (see "The harness")
@@ -877,7 +877,7 @@ When history nears the context limit, older turns are summarised. Two rules keep
 | Action review | Clear / caution on irreversible actions | Falls back to the LLM reviewer |
 | Flow runner | Skips the popup-check LLM call when there's clearly no popup; passes clearly-true `Verify …` steps | The normal LLM path runs |
 
-It works through any of three providers, all taking the same request:
+It works through TypeSafe directly, Vercel AI Gateway or OpenRouter, which all take the same request, or through OpenAI's [Decisions API](https://developers.openai.com/api/docs/guides/decisions):
 
 ```yaml
 jev:
@@ -896,9 +896,17 @@ jev:
   enabled: true
   provider: openrouter
   api_key: ${OPENROUTER_API_KEY}
+
+# or OpenAI Decisions (gpt-6-luna) instead of Jev
+jev:
+  enabled: true
+  provider: openai
+  api_key: ${OPENAI_API_KEY}
 ```
 
-`base_url`, `path` and `model` override the provider defaults (for a proxy, say); `min_confidence` (default 0.7) and `timeout_ms` (default 10000) tune it; and `use.tools`, `use.interruption_gate` and `use.verify_fast_path` switch individual integrations off. A misconfigured or unreachable Jev disables itself with a warning; the run carries on without it.
+OpenAI Decisions answers the same three kinds of question (yes/no as `predicate`, `choice`, `score`) with calibrated probabilities, so Slapify translates its questions on the way out and the answers back on the way in. Every row in the table above works with either backend, unchanged. It needs an OpenAI API key; a ChatGPT plan sign-in doesn't cover it.
+
+`base_url`, `path` and `model` override the provider defaults (for a proxy, say; add `protocol: decisions` when the proxy fronts OpenAI); `min_confidence` (default 0.7) and `timeout_ms` (default 10000) tune it; and `use.tools`, `use.interruption_gate` and `use.verify_fast_path` switch individual integrations off. A misconfigured or unreachable Jev disables itself with a warning; the run carries on without it.
 
 ---
 

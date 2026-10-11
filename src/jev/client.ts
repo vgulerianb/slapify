@@ -11,17 +11,27 @@
  * "System One" request body, so one client covers every provider. Only the
  * base URL, key and model id differ.
  *
+ * OpenAI's Decisions API (`provider: openai`, gpt-6-luna) answers the same
+ * kinds of question — predicate, choice, score — with calibrated
+ * probabilities, so it plugs in behind the same decide() call: questions are
+ * translated on the way out and answers back into Jev's shape on the way in,
+ * and every caller (find_element, check, review, the flow runner's fast paths,
+ * ultrafast mode) works with either backend unchanged.
+ *
  * Every call degrades gracefully: on any failure decide() returns an error
  * instead of throwing, and callers fall back to the normal LLM path.
  */
 
 import { JevConfig } from "../types.js";
 
+type Protocol = "systemone" | "decisions";
+
 /** Provider defaults. Any field can be overridden in config. */
-const PRESETS: Record<string, { base_url: string; model: string }> = {
+const PRESETS: Record<string, { base_url: string; model: string; path?: string; protocol?: Protocol }> = {
   typesafe: { base_url: "https://api.typesafe.ai", model: "jev-latest" },
   vercel: { base_url: "https://ai-gateway.vercel.sh/typesafe", model: "jev-latest" },
   openrouter: { base_url: "https://openrouter.ai/api", model: "~typesafe/jev-latest" },
+  openai: { base_url: "https://api.openai.com", model: "gpt-6-luna", path: "/v1/decisions", protocol: "decisions" },
 };
 
 const DEFAULT_PATH = "/v1/systemone";
@@ -61,18 +71,110 @@ export type JevResult =
   | { ok: true; answers: Record<string, JevAnswer>; ms: number; inputTokens: number }
   | { ok: false; error: string };
 
+function textOf(t: JevText): string {
+  return typeof t === "string" ? t : JSON.stringify(t);
+}
+
+/**
+ * Jev questions → a Decisions request. Question names are replaced by
+ * q0, q1, … (Jev keys can be anything) and mapped back in fromDecisions().
+ */
+export function toDecisionsRequest(
+  model: string,
+  state: string,
+  questions: Record<string, JevQuestion>
+): { body: Record<string, unknown>; names: string[] } {
+  const names = Object.keys(questions);
+  const out = names.map((key, i) => {
+    const q = questions[key];
+    const name = `q${i}`;
+    switch (q.type) {
+      case "choice":
+        return {
+          type: "choice",
+          name,
+          instructions: textOf(q.instructions),
+          choices: Object.entries(q.criteria).map(([value, why]) => ({ value, description: textOf(why) })),
+        };
+      case "noul":
+        return {
+          type: "predicate",
+          name,
+          instructions:
+            `${textOf(q.instructions)}\n\nTrue when: ${textOf(q.criteria.true)}\nFalse when: ${textOf(q.criteria.false)}`,
+        };
+      case "score":
+        return {
+          type: "score",
+          name,
+          instructions: textOf(q.instructions),
+          levels: q.criteria.map((c, level) => ({ label: `Level ${level}`, description: textOf(c) })),
+        };
+    }
+  });
+  return { body: { model, input: state, questions: out }, names };
+}
+
+/**
+ * Decisions answers → Jev answers. A refusal, or an answer that doesn't match
+ * its question, is left out; callers already treat a missing answer as
+ * "not confident" and fall back to the LLM.
+ */
+export function fromDecisionsResponse(
+  json: any,
+  names: string[],
+  questions: Record<string, JevQuestion>
+): Record<string, JevAnswer> {
+  const answers: Record<string, JevAnswer> = {};
+  for (const a of Array.isArray(json?.answers) ? json.answers : []) {
+    const idx = typeof a?.name === "string" && /^q\d+$/.test(a.name) ? Number(a.name.slice(1)) : -1;
+    const key = names[idx];
+    if (key === undefined) continue;
+    const q = questions[key];
+    const probs = (list: unknown): Record<string, number> =>
+      Object.fromEntries(
+        (Array.isArray(list) ? list : [])
+          .filter((p: any) => p && Number.isFinite(p.probability))
+          .map((p: any) => [String(p.value), Number(p.probability)])
+      );
+    if (a.type === "predicate" && q.type === "noul" && Number.isFinite(a.probability)) {
+      answers[key] = { type: "noul", noul: Number(a.probability) };
+    } else if (a.type === "choice" && q.type === "choice" && typeof a.choice === "string" && a.choice in q.criteria) {
+      answers[key] = {
+        type: "choice",
+        choice: a.choice,
+        confidence: Number.isFinite(a.confidence) ? Number(a.confidence) : 0,
+        probabilities: probs(a.probabilities),
+      };
+    } else if (a.type === "score" && q.type === "score" && Number.isFinite(a.score)) {
+      answers[key] = {
+        type: "score",
+        score: Number(a.score),
+        confidence: Number.isFinite(a.confidence) ? Number(a.confidence) : 0,
+        probabilities: probs(a.probabilities),
+      };
+    }
+  }
+  return answers;
+}
+
 export class JevClient {
   readonly url: string;
   readonly model: string;
   readonly minConfidence: number;
+  /** Which backend this is, for logs and error messages. */
+  readonly label: string;
+  private readonly protocol: Protocol;
   private readonly apiKey: string;
   private readonly timeoutMs: number;
 
   constructor(config: JevConfig) {
     const preset = config.provider ? PRESETS[config.provider] : undefined;
     const base = (config.base_url || preset?.base_url || "").replace(/\/+$/, "");
-    this.url = base + (config.path || DEFAULT_PATH);
+    this.protocol = config.protocol || preset?.protocol || "systemone";
+    this.url = base + (config.path || preset?.path || DEFAULT_PATH);
     this.model = config.model || preset?.model || "jev-latest";
+    this.label = this.protocol === "decisions" ? "OpenAI Decisions" : "Jev";
     this.apiKey = config.api_key || "";
     this.minConfidence = config.min_confidence ?? DEFAULT_MIN_CONFIDENCE;
     this.timeoutMs = config.timeout_ms ?? DEFAULT_TIMEOUT_MS;
@@ -85,7 +187,13 @@ export class JevClient {
   static fromConfig(config?: JevConfig): { client: JevClient | null; reason?: string } {
     if (!config?.enabled) return { client: null };
     if (!config.api_key) {
-      return { client: null, reason: "jev.enabled is set but jev.api_key is empty" };
+      return {
+        client: null,
+        reason:
+          config.provider === "openai"
+            ? "jev.provider is openai but jev.api_key is empty (set it to ${OPENAI_API_KEY})"
+            : "jev.enabled is set but jev.api_key is empty",
+      };
     }
     if (!config.base_url && !(config.provider && PRESETS[config.provider])) {
       return {
@@ -101,7 +209,9 @@ export class JevClient {
     questions: Record<string, JevQuestion>
   ): Promise<JevResult> {
     const started = Date.now();
-    const body = JSON.stringify({ model: this.model, state, questions });
+    const decisions = this.protocol === "decisions" ? toDecisionsRequest(this.model, state, questions) : null;
+    const body = JSON.stringify(decisions ? decisions.body : { model: this.model, state, questions });
+    const label = this.label;
     let lastError = "";
 
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
@@ -122,18 +232,18 @@ export class JevClient {
         if (res.ok) {
           const json: any = await res.json();
           if (!json?.answers || typeof json.answers !== "object") {
-            return { ok: false, error: "Jev response had no answers" };
+            return { ok: false, error: `${label} response had no answers` };
           }
           return {
             ok: true,
-            answers: json.answers,
+            answers: decisions ? fromDecisionsResponse(json, decisions.names, questions) : json.answers,
             ms: Date.now() - started,
             inputTokens: Number(json.usage?.input_tokens) || 0,
           };
         }
 
         const detail = (await res.text().catch(() => "")).slice(0, 200);
-        lastError = `Jev HTTP ${res.status}: ${detail}`;
+        lastError = `${label} HTTP ${res.status}: ${detail}`;
         if (res.status === 401) return { ok: false, error: `${lastError} (check jev.api_key)` };
         if (res.status === 422) return { ok: false, error: `${lastError} (request rejected)` };
 
@@ -151,14 +261,14 @@ export class JevClient {
       } catch (err: any) {
         const timedOut = err?.name === "TimeoutError" || err?.name === "AbortError";
         lastError = timedOut
-          ? `Jev timed out after ${this.timeoutMs}ms`
-          : `Jev request failed: ${err?.message || err}`;
+          ? `${label} timed out after ${this.timeoutMs}ms`
+          : `${label} request failed: ${err?.message || err}`;
         // A dropped connection (a reused keep-alive socket the server had just
         // closed, a reset) never reached Jev: safe to send again, once, now.
         if (timedOut || attempt === MAX_RETRIES) break;
         await new Promise((r) => setTimeout(r, 100));
       }
     }
-    return { ok: false, error: lastError || "Jev request failed" };
+    return { ok: false, error: lastError || `${label} request failed` };
   }
 }

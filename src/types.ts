@@ -83,10 +83,17 @@ export interface JevConfig {
   /** Off unless set. Jev is an accelerator, never a requirement. */
   enabled?: boolean;
   /**
-   * Fills in base_url and model. All three accept the same TypeSafe
-   * "System One" request body, so only these defaults differ.
+   * Fills in base_url and model. typesafe, vercel and openrouter accept the
+   * same TypeSafe "System One" request body. openai uses OpenAI's Decisions
+   * API (gpt-6-luna, an OpenAI API key); questions and answers are
+   * translated, so every Jev integration works with it unchanged.
    */
-  provider?: "typesafe" | "vercel" | "openrouter";
+  provider?: "typesafe" | "vercel" | "openrouter" | "openai";
+  /**
+   * Request format, only needed with a custom base_url (a proxy in front of
+   * one of the above). Default: the provider's, else "systemone".
+   */
+  protocol?: "systemone" | "decisions";
   /** Overrides the provider's base URL, e.g. for a proxy or LiteLLM pass-through. */
   base_url?: string;
   /** Request path appended to base_url. Default "/v1/systemone". */

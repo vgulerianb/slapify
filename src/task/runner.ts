@@ -1984,9 +1984,9 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
     console.log(chalk.gray(`  Action review on (${jevClient ? "Jev" : "LLM"} reviewer, ${config.review?.on_unavailable === "allow" ? "allow" : "hold"} when unavailable)`));
   }
   if (jevOff) {
-    console.log(chalk.yellow(`\n⚠️  Jev disabled: ${jevOff}. Continuing without it.\n`));
+    console.log(chalk.yellow(`\n⚠️  Decision model disabled: ${jevOff}. Continuing without it.\n`));
   } else if (jevClient) {
-    console.log(chalk.gray(`  Jev enabled (${jevClient.model} via ${new URL(jevClient.url).host})`));
+    console.log(chalk.gray(`  ${jevClient.label} enabled (${jevClient.model} via ${new URL(jevClient.url).host})`));
   }
   const configDir = loadConfigDir() || process.cwd();
   // LLM fallback chain: config.llm is always an array after normalization in loadConfig.
