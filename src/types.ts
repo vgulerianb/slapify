@@ -9,6 +9,12 @@ export interface SlapifyConfig {
    * writes. Every Jev call falls back to the LLM when it is not confident.
    */
   jev?: JevConfig;
+  /**
+   * Review irreversible actions (posting, sending, buying, deleting) against a
+   * policy before they happen. Uses Jev when configured, the main LLM as a
+   * fallback. Off by default.
+   */
+  review?: ReviewConfig;
   /** Folders the agent may upload files from and save downloads to. */
   files?: FilesConfig;
   browser?: BrowserConfig;
@@ -72,6 +78,25 @@ export interface JevConfig {
     /** Flow runner: pass "Verify ..." steps without an LLM call when clearly true. */
     verify_fast_path?: boolean;
   };
+}
+
+export interface ReviewConfig {
+  enabled?: boolean;
+  /** Plain-English rules the action and anything it publishes must follow. */
+  policy?: string;
+  /**
+   * What to do when no reviewer can answer. "hold" (default) skips the action;
+   * "allow" does it unreviewed. Holding is the safe default: otherwise the
+   * check vanishes exactly when something is already going wrong.
+   */
+  on_unavailable?: "hold" | "allow";
+  /** Use the main LLM when Jev is unavailable or unsure. Default "llm". */
+  fallback?: "llm" | "none";
+  /**
+   * Jev verdicts with a smaller margin than this (its choice confidence) get a
+   * second opinion from the LLM. Default 0.4, roughly a 70/30 split.
+   */
+  min_confidence?: number;
 }
 
 export interface PluginsConfig {

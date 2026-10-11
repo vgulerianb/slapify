@@ -36,6 +36,7 @@ export type {
   LLMConfig,
   BrowserConfig,
   JevConfig,
+  ReviewConfig,
   FilesConfig,
   ReportConfig,
   CredentialsConfig,

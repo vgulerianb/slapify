@@ -557,6 +557,13 @@ jev:
   provider: typesafe          # or vercel, openrouter
   api_key: ${TYPESAFE_API_KEY}
 
+# Review irreversible actions against a policy before they happen (see "The harness")
+review:
+  enabled: true
+  policy: |
+    Replies must be on-topic, friendly and free of made-up facts.
+    Never buy anything or delete anything.
+
 # Where uploads may come from and downloads go (defaults shown)
 files:
   uploads_dir: .slapify/uploads
