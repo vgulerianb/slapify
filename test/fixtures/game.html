@@ -1,0 +1,15 @@
+<!doctype html>
+<html><head><title>Game input</title></head><body style="margin:0">
+<p id="log">log:</p>
+<iframe id="g" style="position:absolute;left:100px;top:80px;width:400px;height:300px;border:0" srcdoc='
+<body style="margin:0;background:#123">
+<canvas id="c" width="400" height="300"></canvas>
+<script>
+  const held = {};
+  const say = (m) => parent.postMessage(m, "*");
+  addEventListener("keydown", (e) => { if (e.repeat) return; held[e.code] = performance.now(); say("down " + e.code + " held=" + Object.keys(held).join("+")); });
+  addEventListener("keyup", (e) => { const t = held[e.code]; delete held[e.code]; say("up " + e.code + " " + Math.round(performance.now() - t) + "ms"); });
+  addEventListener("mousedown", (e) => say("click " + e.clientX + "," + e.clientY));
+</script></body>'></iframe>
+<script>addEventListener("message", (e) => { document.getElementById("log").textContent += " | " + e.data; });</script>
+</body></html>

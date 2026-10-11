@@ -1,0 +1,14 @@
+<!doctype html>
+<html><head><title>Capabilities</title></head><body>
+<h1>Capability test</h1>
+<p id="log">log:</p>
+<script>function log(s){document.getElementById('log').textContent+=' '+s;}</script>
+<input type="checkbox" id="agree" onchange="log('agree='+this.checked)"> <label for="agree">I agree</label>
+<select id="size" aria-label="Size" onchange="log('size='+this.value)"><option value="s">Small</option><option value="l">Large</option></select>
+<button id="hov" onmouseover="log('hovered')">Hover target</button>
+<button ondblclick="log('dblclicked')">Double target</button>
+<input type="file" id="up" aria-label="Attachment" onchange="log('file='+this.files[0].name)">
+<a href="data:text/plain,hello%20download" download="report.txt">Download report</a>
+<a href="capabilities.html?second" target="_blank">Open second tab</a>
+<input id="note" aria-label="Note">
+</body></html>

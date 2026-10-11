@@ -1,0 +1,17 @@
+<!doctype html>
+<html><head><title>Board</title>
+<style>
+  body { margin: 0; font: 14px sans-serif; }
+  #bg { position: absolute; left: 0; top: 0; width: 100%; height: 100%; z-index: -1; }
+  #board { display: grid; grid-template-columns: repeat(8, 50px); width: 400px; height: 400px; margin: 20px; }
+  #board div:nth-child(odd) { background: #b58863; } #board div:nth-child(even) { background: #f0d9b5; }
+</style></head><body>
+<!-- Decorative background painted behind everything: not something to work with. -->
+<canvas id="bg"></canvas>
+<button id="a11y">Enable text mode</button>
+<div id="board"></div>
+<script>
+  const b = document.getElementById("board");
+  for (let i = 0; i < 64; i++) b.appendChild(document.createElement("div"));
+</script>
+</body></html>

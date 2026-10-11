@@ -3,6 +3,13 @@ export interface SlapifyConfig {
   /** Single model or an ordered fallback chain (tried in order on failure). */
   llm: LLMConfig | LLMConfig[];
   /**
+   * Send screenshots to the model as images so it can actually look at the
+   * page. Off by default: images cost a lot of tokens per call, and the
+   * `claude-cli` provider cannot carry them at all (it runs `claude -p`,
+   * which is text-only), so this needs an API-key provider.
+   */
+  vision?: boolean;
+  /**
    * Optional Jev decision model. Speeds up narrow yes/no and "which one"
    * decisions (finding an element, checking a condition, skipping empty
    * popup checks) without replacing the main LLM, which still plans and

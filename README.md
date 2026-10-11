@@ -117,6 +117,13 @@ npx slapify task "Every day at 9am, collect top tech headlines and add to report
 | Capability                | Details                                                                        |
 | ------------------------- | ------------------------------------------------------------------------------ |
 | **Browse & interact**     | Navigate, click, type, scroll, fill forms, handle popups                       |
+| **Mouse & forms**         | `hover`, `double_click`, `drag`, idempotent `set_checked`, native `select_option` |
+| **Files**                 | `upload_file` (sandboxed to an uploads folder) and `download_file` (sanitized, never overwrites) |
+| **Tabs**                  | `list_tabs`, `switch_tab`, `close_tab` for sign-in popups and anything that opens a new window |
+| **Fast decisions**        | Optional [Jev](#jev-optional-decision-model): `find_element` and `check` answer "which element" and "is this true" in under a second |
+| **Read pages**            | `get_page_text()` reads body copy (posts, articles, results) that the interactive snapshot omits |
+| **Find URLs**             | `get_links()` lists hrefs, so it can go straight to an item instead of hunting for its button |
+| **See the page**          | Optional `vision` — screenshots sent to the model as images (see [Vision](#vision)) |
 | **Bypass bot protection** | Falls back to HTTP-level requests when the browser is blocked                  |
 | **Login automatically**   | Detects login forms, uses saved credential profiles, asks you to save new ones |
 | **Persistent memory**     | Stores key facts between runs (thread URLs, last-seen items, etc.)             |
@@ -551,6 +558,9 @@ browser:
   args:
     - "--no-sandbox"
 
+# Let the agent look at screenshots (off by default)
+vision: true
+
 # Optional fast decision model (see "Jev")
 jev:
   enabled: true
@@ -588,6 +598,27 @@ telegram:
 ```
 
 ---
+
+## Vision
+
+`vision: true` lets the agent actually look at the page instead of only reading its accessibility tree. Reach for it when text isn't the answer — a CAPTCHA, a chart, an image-only post, a layout that looks wrong. For reading text, `get_page_text()` stays the better tool: cheaper, and exact characters rather than pixels.
+
+```
+screenshot(look_for: "what characters are in the CAPTCHA?")
+```
+
+`look_for` is worth using — a specific question gets a far more useful answer than a generic description.
+
+How the image reaches the model depends on the provider:
+
+| Provider | Mechanism |
+| --- | --- |
+| `anthropic`, `openai`, `google`, … | the image is attached inline as a real image part |
+| `claude-cli` | a separate one-shot `claude -p` call reads the image off disk and returns a description |
+
+The `claude-cli` path exists because `claude -p` accepts no inline image data. It *can* read an image with its own `Read` tool — but enabling `Read` on the agent's normal turns makes the model stop trusting the prompt-simulated tool protocol this provider runs on, and it starts answering in prose, which breaks every turn. Isolating vision in its own call keeps the protocol intact. The upside: vision works on Claude Code subscription auth, with no API key.
+
+Only the most recent screenshot is kept in context — base64 images dominate token cost, and a stale screenshot is worth little. Older ones become a placeholder telling the agent to take a fresh one.
 
 ## Extensibility & Live Chat
 

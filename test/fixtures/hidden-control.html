@@ -1,0 +1,11 @@
+<!doctype html>
+<html><head><title>Hidden control</title></head><body>
+<!-- Kept for keyboard and screen-reader users, moved off-screen for everyone else. -->
+<button id="a11y" style="position:absolute;left:-99999px">Enable text mode</button>
+<p id="state">text mode off</p>
+<script>
+  document.getElementById("a11y").addEventListener("click", () => {
+    document.getElementById("state").textContent = "text mode on";
+  });
+</script>
+</body></html>

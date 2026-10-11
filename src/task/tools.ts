@@ -19,7 +19,28 @@ export const taskTools = {
 
   get_page_state: tool({
     description:
-      "Get the current browser state: URL, page title, and an accessibility snapshot of all interactive elements with their ref IDs. Use ref IDs with click/type tools.",
+      "Get the current browser state: URL, page title, and an accessibility snapshot of all interactive elements with their ref IDs. Use ref IDs with click/type tools. " +
+      "This lists only interactive elements — buttons, links, inputs — so body text (posts, articles, comments, search results) will NOT appear here. To read what a page actually says, call get_page_text().",
+    parameters: z.object({}),
+  }),
+
+  get_links: tool({
+    description:
+      "List the links on the current page as {href, text} pairs. This is the ONLY way to discover URLs: get_page_state() names links but omits their href, and get_page_text() returns visible text with no URLs. " +
+      "Use it to grab a permalink so you can navigate straight to a specific item instead of hunting for the right button in a long list. Filter with `contains` (e.g. '/status/' for tweet permalinks).",
+    parameters: z.object({
+      contains: z
+        .string()
+        .optional()
+        .describe("Only return links whose URL contains this substring"),
+      limit: z.number().optional().describe("Max links to return (default 100)"),
+    }),
+  }),
+
+  get_page_text: tool({
+    description:
+      "Read the visible text of the current page. Use this whenever you need to know what the page SAYS rather than what you can click on: reading posts or tweets and their replies, articles, notifications, search results, error messages. " +
+      "get_page_state() only reports interactive elements and omits body text, so an empty-looking snapshot does not mean the page is empty — call this to read it.",
     parameters: z.object({}),
   }),
 
@@ -56,6 +77,120 @@ export const taskTools = {
     }),
   }),
 
+  hover: tool({
+    description:
+      "Move the mouse over an element by ref, to reveal menus, tooltips or controls that only appear on hover.",
+    parameters: z.object({
+      ref: z.string().describe("The ref ID of the element to hover"),
+    }),
+  }),
+
+  double_click: tool({
+    description: "Double-click an element by ref (e.g. to open an item or select a word).",
+    parameters: z.object({
+      ref: z.string().describe("The ref ID of the element"),
+      description: z.string().optional().describe("Human-readable description of the element"),
+    }),
+  }),
+
+  set_checked: tool({
+    description:
+      "Set a checkbox, radio button or switch to checked or unchecked. Safer than click() for these: it is idempotent, so calling it twice never flips the state back.",
+    parameters: z.object({
+      ref: z.string().describe("The ref ID of the checkbox / radio / switch"),
+      checked: z.boolean().describe("true to check, false to uncheck"),
+    }),
+  }),
+
+  select_option: tool({
+    description:
+      "Choose an option in a native <select> dropdown (a combobox in get_page_state()). Pass the option's visible label or its value.",
+    parameters: z.object({
+      ref: z.string().describe("The ref ID of the select / combobox"),
+      option: z.string().describe("The option label or value to choose"),
+    }),
+  }),
+
+  drag: tool({
+    description: "Drag one element and drop it onto another (sortable lists, kanban boards, sliders).",
+    parameters: z.object({
+      source_ref: z.string().describe("The ref ID of the element to drag"),
+      target_ref: z.string().describe("The ref ID of the element to drop onto"),
+    }),
+  }),
+
+  upload_file: tool({
+    description:
+      "Attach local files to a file input (the 'Choose file' / upload button). Only files in the configured uploads folder, or files you downloaded earlier in this task, can be uploaded; give a filename relative to the uploads folder or the path download_file returned.",
+    parameters: z.object({
+      ref: z.string().describe("The ref ID of the file input or upload button"),
+      paths: z.array(z.string()).min(1).describe("Files to upload"),
+    }),
+  }),
+
+  download_file: tool({
+    description:
+      "Click an element that starts a download, and save the file. Returns the saved path and size; the path can be passed to upload_file later.",
+    parameters: z.object({
+      ref: z.string().describe("The ref ID of the download link or button"),
+      filename: z.string().optional().describe("Name to save it as (optional)"),
+    }),
+  }),
+
+  hold_keys: tool({
+    description:
+      "Hold one or more keys down together for a duration, then release them. Real key-down/key-up events, so this works where press() does not: games (hold W to move forward, W+A to turn), canvas apps and anything that reads held keys. " +
+      "Keys: letters, digits, F1-F12, Enter, Escape, Space, Tab, Shift, Control, Alt, ArrowUp/Down/Left/Right. A short ms (80) is a tap. The page must have focus: click_at() on it first if keys seem to do nothing.",
+    parameters: z.object({
+      keys: z.array(z.string()).min(1).max(4).describe("Keys held together, e.g. ['w'] or ['w','a']"),
+      ms: z.number().min(20).max(10000).describe("How long to hold them, in milliseconds"),
+      look_for: z.string().optional().describe("Also look at the screen right after, and answer this question about it (saves a separate screenshot turn)"),
+      settle_ms: z.number().min(0).max(5000).optional().describe("How long to wait before looking (default 300). Raise it (2000-3000) when the action starts an animation or transition: opening, entering, loading, a dialog sliding in. Looking too early shows a half-finished frame."),
+    }),
+  }),
+
+  click_at: tool({
+    description:
+      "Click at a position in the viewport, in CSS pixels from the top-left (the same coordinates as a screenshot at 1x). For canvas apps and games, which have no element refs. Also gives that spot keyboard focus.",
+    parameters: z.object({
+      x: z.number().describe("Pixels from the left edge of the viewport"),
+      y: z.number().describe("Pixels from the top edge of the viewport"),
+      button: z.enum(["left", "right"]).optional(),
+      look_for: z.string().optional().describe("Also look at the screen right after, and answer this question about it (saves a separate screenshot turn)"),
+      settle_ms: z.number().min(0).max(5000).optional().describe("How long to wait before looking (default 300). Raise it (2000-3000) when the click starts an animation or transition."),
+    }),
+  }),
+
+  move_mouse: tool({
+    description:
+      "Move the mouse pointer to a viewport position without clicking (hover menus, a cursor in canvas apps). " +
+      "It cannot turn a 3D game camera that uses a captured mouse (pointer lock): those read relative motion this does not produce. Turn with the keys instead (usually A/D or the arrows).",
+    parameters: z.object({
+      x: z.number(),
+      y: z.number(),
+    }),
+  }),
+
+  list_tabs: tool({
+    description:
+      "List open browser tabs with their ids, titles and URLs. Use when a click may have opened a new tab or window (OAuth sign-in, a popup, a checkout).",
+    parameters: z.object({}),
+  }),
+
+  switch_tab: tool({
+    description: "Make a tab the active one, by its id from list_tabs() (e.g. t2). Call get_page_state() afterwards.",
+    parameters: z.object({
+      id: z.string().describe("Tab id, e.g. t2"),
+    }),
+  }),
+
+  close_tab: tool({
+    description: "Close a tab by id, or the active tab when no id is given.",
+    parameters: z.object({
+      id: z.string().optional().describe("Tab id, e.g. t2"),
+    }),
+  }),
+
   scroll: tool({
     description: "Scroll the page in a direction.",
     parameters: z.object({
@@ -74,12 +209,20 @@ export const taskTools = {
 
   screenshot: tool({
     description:
-      "Take a screenshot of the current browser state and return a description of what is visible.",
+      "Look at the current page as an image. Use it when text is not enough: a CAPTCHA, a chart, an image-only post, or a layout that looks wrong and you want to see why. " +
+      "For reading text, prefer get_page_text() — it is cheaper and gives exact characters. " +
+      "If vision is disabled the image is only saved to disk and you will be told you cannot see it.",
     parameters: z.object({
       description: z
         .string()
         .optional()
         .describe("Why you are taking this screenshot"),
+      look_for: z
+        .string()
+        .optional()
+        .describe(
+          "What you need to know from the image, as a question (e.g. 'what characters are in the CAPTCHA?', 'is there an error banner?'). Asking something specific gives a far more useful answer than a generic description."
+        ),
     }),
   }),
 
@@ -343,4 +486,63 @@ export const taskTools = {
   }),
 };
 
-export type TaskToolName = keyof typeof taskTools;
+/**
+ * Tools backed by the Jev decision model. Only offered to the agent when
+ * `jev.enabled` is set, so an agent without Jev never sees them.
+ */
+export const jevTools = {
+  find_element: tool({
+    description:
+      "Find the element on the current page that matches a plain-English description, and get its ref. " +
+      "Much faster and cheaper than reading the whole get_page_state() snapshot yourself, and good at telling apart elements that look alike (a reply COUNT button vs the reply box, a placeholder vs the real input). " +
+      "Returns a ref with a confidence. If `confident` is false, do not trust the ref: call get_page_state() and choose yourself. " +
+      "Say what kind of element it is (text box, button, link, checkbox): only matching elements are considered. Pass `descriptions` to find several elements in one call.",
+    parameters: z.object({
+      description: z
+        .string()
+        .optional()
+        .describe("What the element is, e.g. 'the text box for writing a reply', 'the Like button for this tweet', 'the search input'"),
+      descriptions: z
+        .array(z.string())
+        .max(8)
+        .optional()
+        .describe("Several elements at once, answered in a single fast request, e.g. ['the reply text box', 'the Like button for the main tweet']. Use instead of calling find_element repeatedly."),
+    }),
+  }),
+
+  check: tool({
+    description:
+      "Check whether a statement is true about what the current page says, and get a calibrated probability. " +
+      "Use it for yes/no questions you would otherwise answer by reading the whole page: did my reply post, am I logged in, is this a login wall or an error page, is this tweet actually about TypeScript. " +
+      "One call, no need to read the page text yourself. Treat probability >= 0.85 as yes and <= 0.15 as no; anything in between is uncertain, so look for yourself.",
+    parameters: z.object({
+      statement: z
+        .string()
+        .describe("A statement to test, phrased so 'true' means yes, e.g. 'My reply appears on this page', 'The user is logged in'"),
+    }),
+  }),
+};
+
+/**
+ * Offered when Jev AND vision are on: a fast look–decide–act loop for canvas
+ * apps and games, where Jev picks each small move from what the screen shows.
+ */
+export const pursueTools = {
+  pursue: tool({
+    description:
+      "Hand a short physical sub-goal to a fast inner loop: it repeatedly looks at the screen, lets a fast decision model pick the next small move (forward, turn left/right, forward while turning, back up, interact, wait) and does it, about every 6 seconds, without asking you each time. " +
+      "Use it in games and canvas apps once you know the movement keys, for things like 'walk to the red car and get in' or 'go through the door on the left'. It stops when the goal is done, it is stuck, it is unsure, or max_steps runs out, and returns what it did and the last view. Check the result before relying on it.",
+    parameters: z.object({
+      goal: z.string().describe("A short, concrete, visible sub-goal, e.g. 'walk up to the red car and get in'"),
+      keys: z
+        .object({ forward: z.string().optional(), back: z.string().optional(), left: z.string().optional(), right: z.string().optional(), interact: z.string().optional() })
+        .optional()
+        .describe("Key bindings (defaults: w, s, a, d, f)"),
+      max_steps: z.number().min(1).max(30).optional().describe("Moves before handing back (default 12)"),
+      settle_ms: z.number().min(0).max(5000).optional().describe("Wait after each movement before looking again (default 400)"),
+      interact_settle_ms: z.number().min(0).max(8000).optional().describe("Wait after an interact before looking again (default 2500): interactions usually start an animation, and acting again mid-way can cancel it"),
+    }),
+  }),
+};
+
+export type TaskToolName = keyof typeof taskTools | keyof typeof jevTools | keyof typeof pursueTools;

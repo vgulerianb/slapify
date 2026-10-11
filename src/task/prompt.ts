@@ -29,10 +29,26 @@ export function buildSystemPrompt(
     goal: string,
     schema?: object,
     plugins?: PluginsConfig,
-    configDir?: string
+    configDir?: string,
+    vision?: boolean,
+    jev?: boolean,
+    persistent?: boolean
 ): string {
     const g = goal.toLowerCase();
     const fragments: string[] = [rule("base.md")];
+
+    // ── Vision ─────────────────────────────────────────────────────────────────
+    // Only when screenshots are actually attached as images; otherwise telling
+    // the agent it can see would be a lie.
+    if (vision) {
+        fragments.push(rule("vision.md"));
+    }
+
+    // ── Jev ────────────────────────────────────────────────────────────────────
+    // Only when the find_element / check tools are actually registered.
+    if (jev) {
+        fragments.push(rule("jev.md"));
+    }
 
     // ── Monitoring / scheduling ────────────────────────────────────────────────
     // Detected whenever the task is meant to run repeatedly or watch for events.

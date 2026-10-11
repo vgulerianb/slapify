@@ -1,0 +1,9 @@
+<!doctype html>
+<html><head><title>Dead button</title></head><body>
+<button id="dead">Reply</button>
+<button id="live" aria-pressed="false">Like</button>
+<script>
+  // The Like button toggles; the Reply button is wired to nothing.
+  document.getElementById("live").addEventListener("click", (e) => e.target.setAttribute("aria-pressed", "true"));
+</script>
+</body></html>

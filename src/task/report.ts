@@ -43,6 +43,8 @@ function toolIcon(toolName: string): string {
   const icons: Record<string, string> = {
     navigate: "🌐",
     get_page_state: "📄",
+    get_page_text: "📖",
+    get_links: "🔗",
     click: "🖱️",
     type: "⌨️",
     press: "⌨️",
