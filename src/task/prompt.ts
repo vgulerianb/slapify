@@ -1,5 +1,5 @@
 import { readFileSync } from "fs";
-import { join, dirname } from "path";
+import { join, dirname, resolve } from "path";
 import { fileURLToPath } from "url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -123,7 +123,7 @@ export function buildSystemPrompt(
         for (const rulePath of plugins.rules) {
             try {
                 // Ensure we use an absolute path resolved relative to the .slapify dir
-                const absolutePath = require("path").resolve(configDir, rulePath);
+                const absolutePath = resolve(configDir, rulePath);
                 // Load straight from disk. We don't cache these the same way we cache internal
                 // rules because users might be actively editing them while the agent is running.
                 const content = readFileSync(absolutePath, "utf-8");

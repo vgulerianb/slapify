@@ -1361,10 +1361,16 @@ class ToolExecutor {
         }
         const data = args.data as Record<string, unknown>;
         const mode = (args.mode as string) || "append";
+        // Each scheduled run is a fresh session with no output of its own, so
+        // build on what earlier runs left in the file. Otherwise its first
+        // write would replace everything they recorded.
+        const current = this.isScheduledRun
+          ? readStructuredOutput(this.outputFile) ?? this.session.structuredOutput
+          : this.session.structuredOutput;
         this.session.structuredOutput = writeStructuredOutput(
           data,
           mode as "append" | "overwrite",
-          this.session.structuredOutput,
+          current,
           this.outputFile
         );
         saveSessionMeta(this.session);
@@ -1654,6 +1660,16 @@ class ToolExecutor {
 
 // ─── Structured output helpers ───────────────────────────────────────────────
 
+/** The JSON already in the output file, or undefined when there is none to build on. */
+function readStructuredOutput(outputFile?: string): unknown {
+  if (!outputFile || !fs.existsSync(outputFile)) return undefined;
+  try {
+    return JSON.parse(fs.readFileSync(outputFile, "utf8"));
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Merge or append `data` into the current structured output, and persist
  * to `outputFile` if provided.
@@ -1880,23 +1896,25 @@ export function pruneToolResultHistory(
  * Where to cut the history for compaction.
  *
  * Two rules, both learned the hard way:
- *  1. Index 0 is the goal, and it is never summarized. The goal is the only
- *     place the user's instructions live, so paraphrasing it lets rules fade:
- *     across three long runs, em dash violations were 0 in 81 replies before
- *     the first compaction and 44 in 264 after.
+ *  1. The head (the first `head` messages: the goal, plus any memory note
+ *     placed ahead of it) is never summarized. The goal is the only place the
+ *     user's instructions live, so paraphrasing it lets rules fade: across
+ *     three long runs, em dash violations were 0 in 81 replies before the
+ *     first compaction and 44 in 264 after.
  *  2. The kept tail must start on a complete exchange. Cutting at an arbitrary
  *     index can keep a tool result whose tool call was summarized away.
  *
- * Returns the index where the kept tail begins; everything in 1..cut-1 is
- * summarized. Returns 1 when there is nothing to summarize.
+ * Returns the index where the kept tail begins; everything in head..cut-1 is
+ * summarized. Returns `head` when there is nothing to summarize.
  */
 export function chooseCompactionCut(
   messages: Array<{ role: string; content: unknown }>,
-  keepRecent: number
+  keepRecent: number,
+  head: number = 1
 ): number {
-  let cut = Math.max(1, messages.length - keepRecent);
+  let cut = Math.max(head, messages.length - keepRecent);
   // Never start the tail on tool results: pull the cut back to their call.
-  while (cut > 1 && messages[cut]?.role === "tool") cut--;
+  while (cut > head && messages[cut]?.role === "tool") cut--;
   return cut;
 }
 
@@ -1905,15 +1923,21 @@ const SUMMARY_INSTRUCTIONS =
   "Do NOT restate the task's instructions: the original task is kept verbatim separately, and a paraphrase of it would silently weaken its rules.\n\n" +
   "Live instructions from the user (marked [LIVE INSTRUCTION FROM USER VIA TELEGRAM]) apply only to the cycle they arrived in. Carry one forward only if the user said it is lasting ('from now on', 'always', 'going forward'), and then quote it exactly.";
 
+/**
+ * Summarize the middle of the history. `head` is how many opening messages
+ * are kept word for word: 1 when the goal is message 0, more when a memory
+ * note (from --memory-from or a scheduled run) or other setup comes with it.
+ */
 export async function compactMessages(
   messages: Array<{ role: string; content: unknown }>,
   model: ReturnType<typeof getModel>,
   sessionId: string,
-  keepRecent: number = COMPACT_KEEP_RECENT
+  keepRecent: number = COMPACT_KEEP_RECENT,
+  head: number = 1
 ): Promise<Array<{ role: string; content: unknown }>> {
-  const goal = messages[0];
-  const cut = chooseCompactionCut(messages, keepRecent);
-  const toSummarize = messages.slice(1, cut);
+  const pinned = messages.slice(0, head);
+  const cut = chooseCompactionCut(messages, keepRecent, head);
+  const toSummarize = messages.slice(head, cut);
   const recent = messages.slice(cut);
 
   if (toSummarize.length === 0) return messages;
@@ -1929,15 +1953,8 @@ export async function compactMessages(
       ],
     });
 
-    appendEvent(sessionId, {
-      type: "context_compacted",
-      fromMessages: messages.length,
-      toMessages: 2 + recent.length,
-      ts: new Date().toISOString(),
-    });
-
-    return [
-      goal,
+    const compacted = [
+      ...pinned,
       {
         role: "user",
         content: `[Context Summary — earlier conversation compacted to save tokens. The task above is unchanged and still applies in full.]\n${summary}`,
@@ -1948,9 +1965,18 @@ export async function compactMessages(
         : [{ role: "assistant", content: "Understood. I will continue from this summary." }]),
       ...recent,
     ];
+
+    appendEvent(sessionId, {
+      type: "context_compacted",
+      fromMessages: messages.length,
+      toMessages: compacted.length,
+      ts: new Date().toISOString(),
+    });
+
+    return compacted;
   } catch {
     // Compaction failed: drop the middle but never the goal.
-    return [goal, ...recent];
+    return [...pinned, ...recent];
   }
 }
 
@@ -2088,6 +2114,8 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
   // Set up or resume session
   let session: TaskSession;
   let messages: Array<{ role: string; content: unknown }>;
+  /** The message holding the goal, so compaction can keep it word for word. */
+  let goalMessage: { role: string; content: unknown } | undefined;
 
   if (sessionId) {
     const existing = loadSession(sessionId);
@@ -2101,6 +2129,7 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
     const { rebuildMessages } = await import("./session.js");
     const events = (await import("./session.js")).loadEvents(sessionId);
     messages = rebuildMessages(events);
+    goalMessage = messages[0];
     // The browser restarted with the process: every ref in that history is gone.
     messages.push({
       role: "user",
@@ -2120,7 +2149,8 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
       saveSessionMeta(session);
     }
 
-    messages = [{ role: "user", content: goal }];
+    goalMessage = { role: "user", content: goal };
+    messages = [goalMessage];
     appendEvent(session.id, {
       type: "session_start",
       goal,
@@ -2294,6 +2324,14 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
     });
   }
 
+  // What compaction keeps word for word. The note above goes in ahead of the
+  // goal, so message 0 is not always the goal: keep everything up to and
+  // including it, plus, for a new session, the setup that follows it (the
+  // time budget). A resumed session's history after the goal is fair game.
+  const pinnedHead = sessionId
+    ? Math.max(1, messages.indexOf(goalMessage!) + 1)
+    : messages.length;
+
   let isDone = false;
   let doneSummary = "";
   let consecutiveIterationErrors = 0;
@@ -2326,7 +2364,7 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
       const contextSize = JSON.stringify(messages).length;
       if (contextSize > MAX_CONTEXT_CHARS) {
         emit({ type: "message", text: `Compacting context (${Math.round(contextSize / 1000)}k chars)...` });
-        messages = await compactMessages(messages, model, session.id);
+        messages = await compactMessages(messages, model, session.id, COMPACT_KEEP_RECENT, pinnedHead);
       }
 
       // ── LIVE TELEGRAM INSTRUCTIONS ───────────────────────────────────────
@@ -2790,7 +2828,7 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
       if (cycleEnded) {
         cycleEnded = false;
         const before = messages.length;
-        messages = await compactMessages(messages, model, session.id, 2);
+        messages = await compactMessages(messages, model, session.id, 2, pinnedHead);
         if (messages.length < before) {
           emit({ type: "message", text: `🧹 Cycle complete — history compacted (${before} → ${messages.length} messages)` });
         }

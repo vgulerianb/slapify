@@ -2,7 +2,7 @@
 // violations were 0/81 before the first compaction and 44/264 after it.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { writeFileSync, mkdtempSync } from "node:fs";
+import { writeFileSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { dist, FAKE_CLAUDE, runScripted, call } from "./helpers/harness.mjs";
@@ -64,4 +64,49 @@ test("a persistent task compacts at the end of each cycle and keeps going", asyn
   );
   assert.ok(r.messages.some((m) => /Cycle complete/.test(m)), r.messages.join(" | "));
   assert.equal(r.session.memory.b, "2", "carried on into the next cycle");
+});
+
+// --memory-from and scheduled runs put a memory note ahead of the goal, so
+// "keep message 0" kept the note and summarized the goal away.
+const memNote = { role: "user", content: "[Memory from previous session]\n- thread_url: https://example.com/t/1" };
+const withMemory = (n) => [memNote, goal, ...Array.from({ length: n }, (_, i) => exchange(i)).flat()];
+
+test("the cut never lands inside the head (memory note + goal)", () => {
+  const h = withMemory(30);
+  for (let keep = 1; keep < h.length + 2; keep++) {
+    const cut = chooseCompactionCut(h, keep, 2);
+    assert.ok(cut >= 2, `keep=${keep} cut into the head`);
+    if (cut < h.length) assert.notEqual(h[cut].role, "tool", `keep=${keep} orphaned a tool result`);
+  }
+});
+
+test("with a memory note ahead of the goal, both survive compaction word for word", async () => {
+  const out = await compactMessages(withMemory(30), model("did stuff"), "test-session", 6, 2);
+  assert.deepEqual(out.slice(0, 2), [memNote, goal]);
+  assert.match(String(out[2].content), /Context Summary/);
+  assert.ok(out.length < withMemory(30).length);
+});
+
+test("a run started with inherited memory still shows the model its goal after compacting", async () => {
+  const log = path.join(mkdtempSync(path.join(tmpdir(), "slapify-log-")), "prompts.txt");
+  process.env.FAKE_CLAUDE_LOG = log;
+  const GOAL = "GOAL-7f3a: never use an em dash, reply to three posts per cycle";
+  try {
+    await runScripted(
+      [
+        call(["remember", { key: "a", value: "1" }]),
+        call(["sleep_until", { until: "1s" }]),
+        "summary of cycle one", // consumed by the compaction call
+        call(["remember", { key: "b", value: "2" }]),
+      ],
+      { goal: GOAL, persistent: true, maxIterations: 4, inheritedMemory: { thread_url: "https://example.com/t/1" } }
+    );
+  } finally {
+    delete process.env.FAKE_CLAUDE_LOG;
+  }
+  const prompts = readFileSync(log, "utf8").split("\n\u0000\n").filter(Boolean);
+  const last = prompts[prompts.length - 1];
+  assert.match(last, /summary of cycle one/, "compaction happened");
+  assert.ok(last.includes(GOAL), "the goal is still there, verbatim");
+  assert.ok(last.includes("thread_url: https://example.com/t/1"), "so is the memory note");
 });
