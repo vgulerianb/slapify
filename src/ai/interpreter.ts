@@ -5,6 +5,7 @@ import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { createMistral } from "@ai-sdk/mistral";
 import { createGroq } from "@ai-sdk/groq";
 import { createClaudeCliModel } from "./claude-cli.js";
+import { createCodexModel } from "./codex.js";
 import {
   LLMConfig,
   FlowStep,
@@ -220,6 +221,15 @@ export function getModel(
       return ollama(config.model) as Parameters<
         typeof generateText
       >[0]["model"];
+    }
+    case "codex": {
+      // ChatGPT plan through the Codex endpoint — signed in with
+      // `slapify login codex`, no API key required.
+      return createCodexModel({
+        model: config.model,
+        reasoningEffort: config.reasoning_effort,
+        timeoutSeconds: config.timeout_seconds,
+      }) as Parameters<typeof generateText>[0]["model"];
     }
     case "claude-cli": {
       // Runs through the local `claude` binary — uses the user's Claude Code

@@ -30,6 +30,7 @@ import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { createMistral } from "@ai-sdk/mistral";
 import { createGroq } from "@ai-sdk/groq";
 import { createClaudeCliModel } from "./ai/claude-cli.js";
+import { createCodexModel, listCodexModels, DEFAULT_CODEX_MODEL } from "./ai/codex.js";
 import { LLMConfig, CredentialProfile } from "./types.js";
 import yaml from "yaml";
 
@@ -72,6 +73,13 @@ function getModelFromConfig(llmConfig: LLMConfig) {
       return createClaudeCliModel({
         model: llmConfig.model,
         cliPath: llmConfig.cli_path,
+        timeoutSeconds: llmConfig.timeout_seconds,
+      });
+    }
+    case "codex": {
+      return createCodexModel({
+        model: llmConfig.model,
+        reasoningEffort: llmConfig.reasoning_effort,
         timeoutSeconds: llmConfig.timeout_seconds,
       });
     }
@@ -134,6 +142,12 @@ program
     }
 
     const providerInfo: Record<string, ProviderConfig> = {
+      // Models come from the signed-in plan's own list (see Step 2 below).
+      codex: {
+        name: "ChatGPT plan via Codex (no API key)",
+        envVar: "",
+        defaultModel: DEFAULT_CODEX_MODEL,
+      },
       "claude-cli": {
         name: "Claude Code CLI (subscription, no API key)",
         envVar: "",
@@ -243,22 +257,27 @@ program
         "   2) Claude Code CLI " +
         chalk.gray("- uses your Claude subscription, no API key")
       );
-      console.log("   3) OpenAI (GPT-4)");
-      console.log("   4) Google (Gemini)");
-      console.log("   5) Mistral");
-      console.log("   6) Groq " + chalk.gray("- fast & free tier"));
-      console.log("   7) Ollama " + chalk.gray("- local, no API key"));
+      console.log(
+        "   3) ChatGPT plan (Codex) " +
+        chalk.gray("- uses your ChatGPT subscription, no API key")
+      );
+      console.log("   4) OpenAI (GPT-4)");
+      console.log("   5) Google (Gemini)");
+      console.log("   6) Mistral");
+      console.log("   7) Groq " + chalk.gray("- fast & free tier"));
+      console.log("   8) Ollama " + chalk.gray("- local, no API key"));
       console.log("");
 
       const providerChoice = await question(chalk.white("   Select [1]: "));
       const providerMap: Record<string, LLMConfig["provider"]> = {
         "1": "anthropic",
         "2": "claude-cli",
-        "3": "openai",
-        "4": "google",
-        "5": "mistral",
-        "6": "groq",
-        "7": "ollama",
+        "3": "codex",
+        "4": "openai",
+        "5": "google",
+        "6": "mistral",
+        "7": "groq",
+        "8": "ollama",
       };
       provider = providerMap[providerChoice] || "anthropic";
 
@@ -356,8 +375,46 @@ program
         console.log("");
       }
 
-      // Step 2: API Key Verification (skip for Ollama and claude-cli)
-      if (provider !== "ollama" && provider !== "claude-cli") {
+      // Step 2 (codex): sign in with ChatGPT, then pick from the plan's models
+      if (provider === "codex") {
+        console.log(chalk.cyan("2. ChatGPT sign-in:\n"));
+        rl.pause();
+        const { loadChatGPTAuth, loginWithChatGPT } = await import("./ai/chatgpt-auth.js");
+        let auth = loadChatGPTAuth();
+        if (auth) {
+          console.log(chalk.green(`   ✓ Already signed in${auth.email ? ` as ${auth.email}` : ""}`));
+        } else {
+          try {
+            auth = await loginWithChatGPT({
+              onUrl: (url) =>
+                console.log(chalk.gray(`   Opening your browser. If it doesn't open, visit:\n   ${url}\n`)),
+            });
+            console.log(chalk.green(`   ✓ Signed in${auth.email ? ` as ${auth.email}` : ""}`));
+          } catch (error: any) {
+            console.log(chalk.red(`   ${error.message}`));
+            console.log(chalk.gray("   You can sign in later with: npx slapify login codex"));
+          }
+        }
+        rl.resume();
+        let slugs: string[] = [];
+        if (auth) {
+          slugs = await listCodexModels().then((m) => m.map((x) => x.slug)).catch(() => []);
+        }
+        if (slugs.length) {
+          console.log(chalk.cyan("\n   Choose model:\n"));
+          slugs.forEach((slug, i) => console.log(`   ${i + 1}) ${slug}`));
+          console.log("");
+          const pick = await question(chalk.white("   Select [1]: "));
+          model = slugs[(parseInt(pick) || 1) - 1] || slugs[0];
+        } else {
+          const typed = await question(chalk.white(`   Model [${DEFAULT_CODEX_MODEL}]: `));
+          model = typed.trim() || DEFAULT_CODEX_MODEL;
+        }
+        console.log(chalk.green(`   ✓ Using model: ${model}\n`));
+      }
+
+      // Step 2: API Key Verification (skip for Ollama, claude-cli and codex)
+      if (provider !== "ollama" && provider !== "claude-cli" && provider !== "codex") {
         console.log(chalk.cyan("2. API Key verification:\n"));
 
         const envVar = info.envVar;
@@ -567,6 +624,9 @@ program
         console.log(chalk.white(`  1. Make sure Ollama is running:`));
         console.log(chalk.cyan(`     ollama serve`));
         console.log(chalk.cyan(`     ollama pull llama3`));
+      } else if (provider === "codex") {
+        console.log(chalk.white(`  1. No API key needed — sign in with ChatGPT if you haven't:`));
+        console.log(chalk.cyan(`     npx slapify login codex`));
       } else if (provider === "claude-cli") {
         console.log(chalk.white(`  1. No API key needed — make sure Claude Code is logged in:`));
         console.log(chalk.cyan(`     claude  (run once and sign in with your subscription)`));
@@ -595,6 +655,66 @@ program
       spinner.fail(error.message);
       process.exit(1);
     }
+  });
+
+// Sign in to a subscription provider
+program
+  .command("login <provider>")
+  .description(
+    "Sign in so a provider runs on your subscription instead of an API key.\n" +
+    "  codex: ChatGPT plan through the Codex endpoint (opens your browser)"
+  )
+  .option("--status", "Show who is signed in, without signing in")
+  .option("--no-browser", "Print the sign-in URL instead of opening a browser")
+  .action(async (provider: string, opts: { status?: boolean; browser?: boolean }) => {
+    if (!["codex", "chatgpt"].includes(provider)) {
+      console.error(chalk.red(`Unknown provider '${provider}'. Supported: codex`));
+      process.exit(1);
+    }
+    const { loadChatGPTAuth, loginWithChatGPT, authFilePath } = await import("./ai/chatgpt-auth.js");
+    let auth = loadChatGPTAuth();
+    if (opts.status) {
+      console.log(
+        auth
+          ? chalk.green(`Signed in to ChatGPT${auth.email ? ` as ${auth.email}` : ""} (${authFilePath()})`)
+          : chalk.yellow("Not signed in. Run: npx slapify login codex")
+      );
+      if (!auth) process.exit(1);
+    } else {
+      try {
+        auth = await loginWithChatGPT({
+          openBrowser: opts.browser !== false,
+          onUrl: (url) => console.log(chalk.gray(`\nSign in with ChatGPT in your browser. If it doesn't open, visit:\n${url}\n`)),
+        });
+      } catch (error: any) {
+        console.error(chalk.red(error.message));
+        process.exit(1);
+      }
+      console.log(chalk.green(`✓ Signed in to ChatGPT${auth.email ? ` as ${auth.email}` : ""}`));
+      console.log(chalk.gray(`  Tokens saved to ${authFilePath()}`));
+    }
+    try {
+      const models = await listCodexModels();
+      if (models.length) {
+        console.log(chalk.white("\nModels on your plan (use one as llm.model with provider: codex):"));
+        for (const m of models) console.log(`  ${m.slug}${m.images ? "" : chalk.gray("  (no images)")}`);
+      }
+    } catch (error: any) {
+      console.log(chalk.gray(`\n(Could not list models: ${error.message})`));
+    }
+    console.log(chalk.gray("\nNote: this uses an undocumented ChatGPT endpoint; OpenAI's terms apply."));
+  });
+
+program
+  .command("logout <provider>")
+  .description("Forget a subscription sign-in (codex)")
+  .action(async (provider: string) => {
+    if (!["codex", "chatgpt"].includes(provider)) {
+      console.error(chalk.red(`Unknown provider '${provider}'. Supported: codex`));
+      process.exit(1);
+    }
+    const { logoutChatGPT } = await import("./ai/chatgpt-auth.js");
+    console.log(logoutChatGPT() ? chalk.green("✓ Signed out of ChatGPT") : chalk.gray("Was not signed in."));
   });
 
 // Install command (for agent-browser)

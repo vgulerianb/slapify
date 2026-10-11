@@ -54,6 +54,8 @@ npx slapify init
 export ANTHROPIC_API_KEY=your-key
 #    ...or skip this entirely: pick "Claude Code CLI" in init to run on your
 #    Claude Pro/Max subscription via `claude -p`. See "Using your Claude subscription".
+#    ...or pick "ChatGPT plan (Codex)" to run on your ChatGPT plan, signed in
+#    with `npx slapify login codex`. See "Using your ChatGPT plan".
 
 # 3a. Run an autonomous task
 npx slapify task "Summarise the top posts on reddit.com/r/programming today" --report
@@ -595,6 +597,11 @@ llm:
   - provider: openai
     model: o3-mini
     api_key: ${OPENAI_API_KEY}
+  # No API key? Run on a subscription instead:
+  # - provider: codex          # ChatGPT plan, after `npx slapify login codex`
+  #   model: gpt-5.4-mini
+  # - provider: claude-cli     # Claude Pro/Max, through the local `claude` binary
+  #   model: sonnet
 
 browser:
   headless: true
@@ -670,7 +677,7 @@ How the image reaches the model depends on the provider:
 
 | Provider | Mechanism |
 | --- | --- |
-| `anthropic`, `openai`, `google`, … | the image is attached inline as a real image part |
+| `anthropic`, `openai`, `google`, `codex`, … | the image is attached inline as a real image part |
 | `claude-cli` | a separate one-shot `claude -p` call reads the image off disk and returns a description |
 
 The `claude-cli` path exists because `claude -p` accepts no inline image data. It *can* read an image with its own `Read` tool — but enabling `Read` on the agent's normal turns makes the model stop trusting the prompt-simulated tool protocol this provider runs on, and it starts answering in prose, which breaks every turn. Isolating vision in its own call keeps the protocol intact. The upside: vision works on Claude Code subscription auth, with no API key.
@@ -796,6 +803,33 @@ claude -p "Run: npx slapify task 'Get the top 5 HN posts with titles and URLs' \
 ```
 
 If Slapify is *also* configured with the `claude-cli` provider, every Slapify turn spawns its own `claude -p` call. That works, but it's usage-heavy — for high-volume scripting, an API-key provider inside Slapify is the lighter setup.
+
+---
+
+## Using your ChatGPT plan (`codex`)
+
+Pay for ChatGPT Plus, Pro or Business? The `codex` provider runs every agent turn on that plan, the way [fx](https://github.com/vercel-labs/fx) does: Slapify signs in with ChatGPT itself and talks to the Codex endpoint directly. No API key, no `codex` binary, no subprocess per turn.
+
+```bash
+npx slapify login codex          # opens your browser; lists the models your plan can use
+npx slapify login codex --status # who is signed in
+npx slapify logout codex
+```
+
+```yaml
+llm:
+  provider: codex
+  model: gpt-5.4-mini            # any model `slapify login codex` lists
+  # reasoning_effort: medium     # minimal | low | medium | high
+```
+
+Unlike `claude-cli`, nothing is bridged through the prompt: tools are native function calls, screenshots go in as real images (so `vision: true` just works), and token usage comes back from the API.
+
+### What to know
+
+- **Tokens** live in `~/.slapify/chatgpt-auth.json` (mode 600), are refreshed shortly before they expire, and a refresh that would switch accounts is refused. Slapify never reads or writes `~/.codex`.
+- **Plan limits apply.** A usage or rate limit is treated like any provider outage: the run waits and retries rather than exiting.
+- **The endpoint is undocumented** (`chatgpt.com/backend-api/codex/responses`) and can change without notice. Sign-in uses the Codex CLI's public OAuth client, as fx does; OpenAI's terms apply to how your plan is used. For automation OpenAI recommends an API key (`provider: openai`).
 
 ---
 
@@ -949,7 +983,7 @@ Other tips for long runs:
 
 ## LLM Providers
 
-Supports 7 providers via Vercel AI SDK.
+Supports 8 providers via Vercel AI SDK.
 
 ### Claude subscription (no API key)
 
@@ -960,6 +994,16 @@ llm:
 ```
 
 Runs through the local `claude` binary on your Claude Pro/Max plan. Full setup and caveats: [Using your Claude subscription](#using-your-claude-subscription-claude--p).
+
+### ChatGPT plan (no API key)
+
+```yaml
+llm:
+  provider: codex
+  model: gpt-5.4-mini
+```
+
+Sign in once with `npx slapify login codex`. Full setup and caveats: [Using your ChatGPT plan](#using-your-chatgpt-plan-codex).
 
 ### Budget-friendly (recommended)
 
@@ -1041,7 +1085,7 @@ your-project/
 
 - Node.js 18+
 - `agent-browser` (installed as a peer dependency)
-- An LLM: an API key for any supported provider, **or** [Claude Code](https://claude.com/claude-code) installed and logged in to use your Claude subscription
+- An LLM: an API key for any supported provider, **or** [Claude Code](https://claude.com/claude-code) installed and logged in to use your Claude subscription, **or** a ChatGPT plan signed in with `npx slapify login codex`
 
 ---
 

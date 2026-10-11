@@ -128,7 +128,8 @@ export interface InitOptions {
   | "mistral"
   | "groq"
   | "ollama"
-  | "claude-cli";
+  | "claude-cli"
+  | "codex";
   model?: string;
   browserPath?: string;
   useSystemBrowser?: boolean;
@@ -137,6 +138,7 @@ export interface InitOptions {
 const DEFAULT_MODELS: Record<string, string> = {
   anthropic: "claude-sonnet-4-6", // Highly capable & recommended
   "claude-cli": "sonnet", // CLI alias — resolved by Claude Code
+  codex: "gpt-5.4-mini", // ChatGPT plan via `slapify login codex`
   openai: "gpt-5.2", // Latest flagship
   google: "gemini-3-flash", // Balanced & fast
   mistral: "mistral-small-latest", // Cheap
@@ -147,6 +149,7 @@ const DEFAULT_MODELS: Record<string, string> = {
 const ENV_VARS: Record<string, string> = {
   anthropic: "ANTHROPIC_API_KEY",
   "claude-cli": "",
+  codex: "",
   openai: "OPENAI_API_KEY",
   google: "GOOGLE_API_KEY",
   mistral: "MISTRAL_API_KEY",
@@ -200,6 +203,13 @@ export function initConfig(
     llmConfig += `
   # Ollama runs locally - no API key needed
   base_url: http://localhost:11434/v1`;
+  } else if (provider === "codex") {
+    llmConfig += `
+  # Runs on your ChatGPT plan through the Codex endpoint. No API key:
+  # sign in once with \`slapify login codex\` (tokens: ~/.slapify/chatgpt-auth.json).
+  # The same command lists the models your plan can use.
+  # reasoning_effort: medium          # minimal | low | medium | high
+  # timeout_seconds: 600              # max seconds per LLM call`;
   } else if (provider === "claude-cli") {
     llmConfig += `
   # Runs through the local \`claude\` binary — uses your Claude Code

@@ -64,7 +64,8 @@ export interface LLMConfig {
   | "mistral"
   | "groq"
   | "ollama"
-  | "claude-cli";
+  | "claude-cli"
+  | "codex";
   model: string;
   api_key?: string;
   base_url?: string;
@@ -72,8 +73,10 @@ export interface LLMConfig {
   label?: string;
   /** claude-cli only: path to the claude binary (default: "claude" from PATH) */
   cli_path?: string;
-  /** claude-cli only: max seconds per CLI call before it's killed (default: 600) */
+  /** claude-cli and codex: max seconds per call before it's abandoned (default: 600) */
   timeout_seconds?: number;
+  /** codex only: reasoning effort for reasoning models (default: the model's own). */
+  reasoning_effort?: "minimal" | "low" | "medium" | "high";
 }
 
 export interface JevConfig {
