@@ -1,6 +1,20 @@
 # slapify 🖐️
 
-**AI-powered browser automation that slaps** — run autonomous agents, audit performance, and write E2E tests in plain English.
+**A fully autonomous browser agent.** Give it a goal in plain English and it does what a person at a keyboard would: reads pages, clicks, types, logs in, fills forms, uploads and downloads files, works across tabs, schedules itself, and keeps going for hours or days, telling you on Telegram what it's doing.
+
+It is also a harness you can leave alone with that autonomy. Every action has a contract; irreversible ones (posting, sending, buying) can be reviewed against your own policy before they happen; repeated failures get guidance instead of dead ends; and a run never dies from a transient failure.
+
+```bash
+npx slapify task "Find three well-reviewed ramen places near Union Square open after 10pm and put them in ramen.json"
+```
+
+```ts
+import { createAgent } from "slapify";
+
+const agent = createAgent({ stealth: true });
+const run = await agent.run("Check the status of my last three orders on example-shop.com");
+console.log(run.finalSummary);
+```
 
 
 https://github.com/user-attachments/assets/52564f16-7664-4ac3-9e06-e04c17dc4bbf
@@ -13,6 +27,7 @@ https://github.com/user-attachments/assets/52564f16-7664-4ac3-9e06-e04c17dc4bbf
 | Mode       | What it does                                                                                                                                                   |
 | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **`task`**   | Autonomous AI agent — give it any goal, it figures out how to achieve it. Browses, logs in, schedules itself, audits performance, remembers state across runs. |
+| **SDK**      | `createAgent()` — the same agent from JS/TS, with inline config, event streaming and resumable sessions. |
 | **`server`** | Persistent server mode — stays online and waits for instructions via Telegram. Start tasks remotely from your phone.                              |
 | **`run`**    | Execute `.flow` test files — plain-English E2E tests with screenshots and HTML reports                                                         |
 
@@ -142,6 +157,36 @@ npx slapify task "Every day at 9am, collect top tech headlines and add to report
 | **Custom Plugins**        | Load your own markdown rules or `.ts` tools directly into the agent's brain    |
 
 ### Programmatic (JS/TS)
+
+`createAgent()` is the simplest way in. Config is read from `.slapify/config.yaml` when there is one; anything you pass inline is laid over it, and inline config with an `llm` is enough on its own.
+
+```typescript
+import { createAgent } from "slapify";
+
+const agent = createAgent({
+  config: {
+    llm: { provider: "anthropic", model: "claude-sonnet-5", api_key: process.env.ANTHROPIC_API_KEY },
+    browser: { headless: true, stealth: true },
+  },
+});
+
+// Run to completion
+const run = await agent.run("Go to news.ycombinator.com and return the top 10 headlines");
+console.log(run.finalSummary);
+
+// Or stream events as they happen
+const stream = agent.stream("Find the cheapest 27-inch 4K monitor on example-store.com");
+for await (const event of stream) {
+  if (event.type === "status_update") console.log("→", event.message);
+  if (event.type === "tool_start") console.log(`  [${event.toolName}]`);
+}
+console.log((await stream.result).finalSummary);
+
+// Pick up where an earlier session left off, memory included
+await agent.resume(run.id, "Now open the top story and summarise the comments");
+```
+
+`runTask()` is the lower-level function underneath and takes the same options:
 
 ```typescript
 import { runTask } from "slapify";

@@ -1,7 +1,7 @@
 {
   "name": "slapify",
   "version": "0.0.22",
-  "description": "AI-powered browser automation — autonomous task agent, performance auditing, and E2E test flows in plain English",
+  "description": "A fully autonomous browser agent: give it a goal in plain English and it browses, logs in, fills forms, handles files and tabs, and keeps going until it is done. Also runs plain-English E2E flows and performance audits.",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -26,6 +26,10 @@
   "keywords": [
     "ai",
     "agent",
+    "autonomous-agent",
+    "browser-agent",
+    "computer-use",
+    "web-agent",
     "browser-automation",
     "testing",
     "e2e",

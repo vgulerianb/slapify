@@ -1,6 +1,10 @@
 // Main exports for programmatic usage
 
-// Task mode
+// Autonomous agent
+export { createAgent } from "./agent.js";
+export type { Agent, AgentOptions, AgentRunOptions, AgentStream } from "./agent.js";
+export { runFast } from "./fast/agent.js";
+export type { FastRunOptions, FastResult, FastStep, FastEvent, FastOperation } from "./fast/agent.js";
 export { runTask, listSessions, loadSession } from "./task/index.js";
 export type {
   TaskRunOptions,
@@ -95,10 +99,10 @@ export interface RunMultipleOptions extends RunOptions {
  *
  * @example
  * ```typescript
- * import { Slapify } from 'testpilot';
+ * import { Slapify } from 'slapify';
  *
  * // Using config file
- * const pilot = new Slapify({ configDir: '.testpilot' });
+ * const pilot = new Slapify({ configDir: '.slapify' });
  *
  * // Or with inline config
  * const pilot = new Slapify({

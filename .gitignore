@@ -35,3 +35,6 @@ npm-debug.log*
 # Slapify config and credentials (never commit)
 .slapify/
 **/.slapify/
+# Blog (not committed)
+blog/
+blog.html
