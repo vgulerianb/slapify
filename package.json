@@ -1,6 +1,6 @@
 {
   "name": "slapify",
-  "version": "0.0.23",
+  "version": "0.0.24",
   "description": "A fully autonomous browser agent: give it a goal in plain English and it browses, logs in, fills forms, handles files and tabs, and keeps going until it is done. Also runs plain-English E2E flows and performance audits.",
   "type": "module",
   "main": "dist/index.js",
