@@ -12,15 +12,15 @@
     "dist/**/*.js",
     "dist/**/*.d.ts",
     "dist/**/*.md",
-    "bin"
+    "bin",
+    "SECURITY.md"
   ],
   "scripts": {
     "build": "tsc && rm -rf dist/task/rules && cp -r src/task/rules dist/task/rules && cp src/browser/stealth-init.js dist/browser/stealth-init.js",
     "dev": "tsc --watch",
     "start": "node dist/index.js",
     "lint": "tsc --noEmit",
-    "minify": "find dist -name '*.js' | xargs -P4 -I{} terser {} --compress --mangle --module -o {}",
-    "prepublishOnly": "npm run build && npm run minify",
+    "prepublishOnly": "npm run build",
     "test": "npm run build && AGENT_BROWSER_SESSION=slapify-test node --test --test-concurrency=1 test/*.test.mjs"
   },
   "keywords": [
@@ -56,14 +56,12 @@
     "@ai-sdk/groq": "^1.0.0",
     "@ai-sdk/mistral": "^1.0.0",
     "@ai-sdk/openai": "^0.0.30",
-    "@types/node-cron": "^3.0.11",
     "agent-browser": "^0.27.0",
     "ai": "^3.0.0",
     "chalk": "^5.3.0",
     "commander": "^12.0.0",
     "dotenv": "^16.4.1",
     "glob": "^10.3.10",
-    "lighthouse": "^13.0.3",
     "node-cron": "^4.2.1",
     "ora": "^8.0.1",
     "wreq-js": "^2.0.1",
@@ -72,8 +70,17 @@
   },
   "devDependencies": {
     "@types/node": "^20.10.0",
+    "@types/node-cron": "^3.0.11",
     "@types/ws": "^8.18.1",
-    "terser": "^5.46.0",
+    "lighthouse": "^13.5.0",
     "typescript": "^5.3.0"
+  },
+  "peerDependencies": {
+    "lighthouse": ">=12"
+  },
+  "peerDependenciesMeta": {
+    "lighthouse": {
+      "optional": true
+    }
   }
 }

@@ -281,12 +281,14 @@ The agent has a built-in `perf_audit` tool. Just ask it to check performance —
 | Category              | Metrics                                                          |
 | --------------------- | ---------------------------------------------------------------- |
 | **Real-user metrics** | FCP, LCP, CLS, TTFB                                              |
-| **Lab scores**        | Performance, Accessibility, SEO, Best Practices (0–100)          |
+| **Lab scores**        | Performance, Accessibility, SEO, Best Practices (0–100), via Lighthouse |
 | **Framework**         | React / Next.js detection, re-render issues, interaction tests   |
 | **Network**           | Total size, JS bundle size, CSS, images                          |
 | **API calls**         | Method, URL, status, duration — slow (>500ms) and failed flagged |
 | **Long tasks**        | JavaScript blocking the main thread (>50ms)                      |
 | **Memory**            | JS heap usage                                                    |
+
+Lab scores come from [Lighthouse](https://github.com/GoogleChrome/lighthouse), an optional peer dependency (it brings a large dependency tree, so it isn't installed by default). Add it with `npm install lighthouse`; without it, audits still report every other metric and say the Lighthouse scores were skipped.
 
 ### Multi-page comparison
 
@@ -1107,8 +1109,15 @@ your-project/
 ## Requirements
 
 - Node.js 18+
-- `agent-browser` (installed as a peer dependency)
+- `agent-browser` (installed with slapify)
+- Optional: `lighthouse`, for Lighthouse lab scores in performance audits (`npm install lighthouse`)
 - An LLM: an API key for any supported provider, **or** [Claude Code](https://claude.com/claude-code) installed and logged in to use your Claude subscription, **or** a ChatGPT plan signed in with `npx slapify login codex`
+
+---
+
+## Security
+
+Slapify drives a real browser and can log in on your behalf, so it does things a scanner will flag: it launches other programs (agent-browser, and optionally the `claude` CLI, ffmpeg and Lighthouse), patches automation fingerprints in stealth mode, and handles credentials. [SECURITY.md](SECURITY.md) explains each of these, what stays on your machine, and how to report a vulnerability.
 
 ---
 

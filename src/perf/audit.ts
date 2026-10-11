@@ -685,7 +685,8 @@ export async function collectReactScanResults(
  * chrome-launcher is a transitive dependency of lighthouse — we don't need to
  * import it directly. Lighthouse manages Chrome internally.
  *
- * Returns null if lighthouse is unavailable or the audit fails.
+ * Returns null if lighthouse is unavailable or the audit fails. Lighthouse is
+ * an optional peer dependency: `npm install lighthouse` to get these scores.
  */
 export async function runLighthouseAudit(
   url: string,
@@ -781,11 +782,21 @@ export async function runLighthouseAudit(
     } finally {
       await chrome.kill();
     }
-  } catch {
-    // lighthouse not installed or audit failed — not fatal
+  } catch (err: any) {
+    // Lighthouse is an optional peer dependency (it pulls in a large tree), so
+    // a missing install is expected: say how to get the scores, once.
+    if (err?.code === "ERR_MODULE_NOT_FOUND" && /lighthouse|chrome-launcher/.test(String(err?.message))) {
+      if (!lighthouseHintShown) {
+        lighthouseHintShown = true;
+        console.warn("Lighthouse scores skipped: install it with `npm install lighthouse` to include them.");
+      }
+    }
+    // Not installed or the audit failed: not fatal, the other metrics stand.
     return null;
   }
 }
+
+let lighthouseHintShown = false;
 
 // ─── Full audit orchestrator ──────────────────────────────────────────────────
 

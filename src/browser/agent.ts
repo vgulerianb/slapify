@@ -1,4 +1,4 @@
-import { execSync, execFileSync, spawn, ChildProcess } from "child_process";
+import { execFileSync, spawn, ChildProcess } from "child_process";
 import { fileURLToPath } from "url";
 import path from "path";
 import { BrowserConfig, BrowserState, RefInfo } from "../types.js";
@@ -99,7 +99,8 @@ export class BrowserAgent {
    * Sleep for a given number of milliseconds
    */
   private sleep(ms: number): void {
-    execSync(`sleep ${ms / 1000}`);
+    // Block in-process rather than spawning `sleep`.
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
   }
 
   /**
@@ -182,7 +183,7 @@ export class BrowserAgent {
         // Special case: If browser daemon is dead/stuck, try to close it and retry
         if (fullErrorText.includes("Browser not launched") && attempt < retries) {
           try {
-            execSync("agent-browser close", { stdio: "ignore" });
+            execFileSync("agent-browser", ["close"], { stdio: "ignore" });
           } catch {
             // ignore close error
           }
@@ -234,7 +235,7 @@ export class BrowserAgent {
    */
   static isInstalled(): boolean {
     try {
-      execSync("agent-browser --version", { stdio: "pipe" });
+      execFileSync("agent-browser", ["--version"], { stdio: "pipe" });
       return true;
     } catch {
       return false;
@@ -246,9 +247,13 @@ export class BrowserAgent {
    */
   static install(): void {
     console.log("Installing agent-browser...");
-    execSync("npm install -g agent-browser", { stdio: "inherit" });
+    // Only from `slapify install`. npm is npm.cmd on Windows, which needs a shell there.
+    execFileSync("npm", ["install", "-g", "agent-browser"], {
+      stdio: "inherit",
+      shell: process.platform === "win32",
+    });
     console.log("Installing browser...");
-    execSync("agent-browser install", { stdio: "inherit" });
+    execFileSync("agent-browser", ["install"], { stdio: "inherit" });
   }
 
   private hasInitialized = false;
