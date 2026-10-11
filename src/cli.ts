@@ -1658,6 +1658,56 @@ program
 // ─── Task command ─────────────────────────────────────────────────────────────
 
 program
+  .command("fast <goal>")
+  .description(
+    "Ultrafast mode: Jev picks every step, the LLM only writes text.\n" +
+    "  For goals that are mostly clicking and filling in. Needs jev in config.\n" +
+    "  Example:\n" +
+    '    slapify fast "Find a waterproof jacket under $150 and add it in size M" --url https://shop.example'
+  )
+  .option("--url <url>", "Page to start on")
+  .option("--headed", "Show the browser window")
+  .option("--stealth", "Hide automation fingerprints (overrides browser.stealth)")
+  .option("--max-actions <n>", "Browser actions before giving up (default 60)")
+  .option("--keep-open", "Leave the browser open afterwards")
+  .option("--record <dir>", "Record the run: annotated frames, video.webm (with ffmpeg) and replay.html")
+  .option("--json", "Print the full result as JSON")
+  .action(async (goal: string, opts: any) => {
+    const { runFast } = await import("./fast/agent.js");
+    console.log(chalk.bold("\n⚡ Slapify Ultrafast"));
+    console.log(chalk.gray(`  Goal: ${goal}${opts.url ? `\n  Start: ${opts.url}` : ""}\n`));
+    const res = await runFast({
+      goal,
+      url: opts.url,
+      headed: opts.headed,
+      stealth: opts.stealth,
+      maxActions: opts.maxActions ? Number(opts.maxActions) : undefined,
+      keepOpen: opts.keepOpen,
+      record: opts.record,
+      onEvent: (e) => {
+        if (e.type !== "step" || opts.json) return;
+        const s = e.step;
+        const what = s.label ? ` ${s.label}` : "";
+        const typed = s.text ? chalk.green(` "${s.text}"`) : "";
+        const conf = chalk.gray(` (${Math.round(s.confidence * 100)}%${s.targetConfidence !== undefined ? ` / ${Math.round(s.targetConfidence * 100)}%` : ""}, jev ${s.jevMs}ms${s.textMs ? `, text ${s.textMs}ms` : ""})`);
+        const note = s.note ? chalk.yellow(`  ${s.note}`) : "";
+        console.log(`  ${chalk.gray(String((s.elapsedMs / 1000).toFixed(1)).padStart(5) + "s")}  ${chalk.cyan(s.operation)}${what}${typed}${conf}${note}`);
+      },
+    });
+    if (opts.json) {
+      console.log(JSON.stringify(res, null, 2));
+    } else {
+      const icon = res.status === "done" ? chalk.green("✅") : res.status === "blocked" ? chalk.yellow("⏸️ ") : chalk.red("❌");
+      console.log(`\n  ${icon} ${res.status} in ${(res.elapsedMs / 1000).toFixed(1)}s: ${res.reason}`);
+      console.log(chalk.gray(`  ${res.steps.length} actions · ${res.decisions} Jev decisions (${res.jevMs}ms, ${res.jevInputTokens} tokens) · ${res.textCalls} text calls (${res.textMs}ms)`));
+      if (res.finalUrl) console.log(chalk.gray(`  Ended on ${res.finalUrl}`));
+      if (res.replay) console.log(chalk.cyan(`  🎬 Recording: ${res.replay}`));
+      console.log("");
+    }
+    process.exit(res.status === "done" ? 0 : 1);
+  });
+
+program
   .command("task [goal]")
   .description(
     "Run an autonomous AI agent task in plain English.\n" +

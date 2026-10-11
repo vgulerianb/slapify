@@ -32,10 +32,21 @@ export interface SlapifyConfig {
   review?: ReviewConfig;
   /** Folders the agent may upload files from and save downloads to. */
   files?: FilesConfig;
+  /** Ultrafast mode (`slapify fast`): Jev drives, the LLM only writes text. */
+  fast?: FastConfig;
   browser?: BrowserConfig;
   report?: ReportConfig;
   plugins?: PluginsConfig;
   telegram?: TelegramConfig;
+}
+
+export interface FastConfig {
+  /** Model that writes field values. A small, fast model is ideal. Default: the first llm. */
+  text_llm?: LLMConfig;
+  /** Browser actions before giving up. Default 60. */
+  max_actions?: number;
+  /** Jev decisions before giving up. Default 120. */
+  max_decisions?: number;
 }
 
 export interface FilesConfig {

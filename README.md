@@ -823,6 +823,36 @@ jev:
 
 ---
 
+## Ultrafast mode (`slapify fast`)
+
+For goals that are mostly clicking and filling in (search, filter, add to cart, fill a form), Jev can drive the browser on its own. Each step is **one Jev request** that picks the operation and, speculatively, a target for every operation (click, type, select), each from only the elements compatible with it. The LLM is called only to write the text for a field. The idea comes from browser-use's [jev-ultrafast](https://github.com/browser-use/jev-ultrafast).
+
+```bash
+slapify fast "Find a waterproof jacket under $150 and add it to the cart in size M with gift wrap" \
+  --url https://shop.example
+```
+
+```
+   6.1s  CLICK link "Drizzle Rain Jacket"      (43% / 97%, jev 1230ms)
+   8.0s  SELECT option "M"                     (62% / 92%, jev 1097ms)
+   9.7s  CLICK checkbox "Gift wrap (+$5)"      (73% / 95%, jev 317ms)
+  11.7s  CLICK button "Add to cart"            (98% / 100%, jev 313ms)
+  12.3s  DONE                                  verification p=0.96
+  ✅ done in 12.3s · 5 Jev decisions · 0 text calls
+```
+
+On that demo store the regular agent takes 79 seconds; ultrafast takes about 12. What keeps it honest:
+
+- **Validated answers.** An operation or target outside the offered set never runs.
+- **DONE has to be verified.** A separate Jev check judges the actions taken plus the page; a rejected claim goes back into the loop, three rejections stop the run.
+- **Stops when stuck.** Three actions in a row that change nothing end the run as `blocked`, rather than looping.
+- **The same guards as the agent.** Clicks are checked for staleness and covering elements first, irreversible clicks go through review when it's on, and text filters apply to typed values.
+- **Budgets.** 60 actions and 120 decisions by default (`--max-actions`, or `fast.max_actions` in config).
+
+It's the right tool for well-defined flows, not for open-ended research or writing: there is no planning model, so anything that needs judgement beyond "which element next" belongs in `slapify task`. From code: `createAgent().fast(goal, { url })`. A small, fast model for field values can be set with `fast.text_llm`.
+
+---
+
 ## Running long tasks unattended
 
 Tasks like "monitor this every 30 minutes" can run for days. Slapify recovers from most failures on its own:
