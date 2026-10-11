@@ -1,6 +1,6 @@
 import fs from "fs";
 import path from "path";
-import { TaskSession, SessionEvent, TaskStatus } from "./types.js";
+import { TaskSession, SessionEvent, TaskStatus, ToolCallRecord } from "./types.js";
 
 const SESSIONS_DIR_NAME = ".slapify/tasks";
 
@@ -130,6 +130,10 @@ export function rebuildMessages(
   events: SessionEvent[]
 ): Array<{ role: string; content: unknown }> {
   const messages: Array<{ role: string; content: unknown }> = [];
+  // The latest response's tool calls still waiting for a result. Tool call
+  // events don't carry the call id, so results are matched to calls in order:
+  // the SDK rejects a history whose tool calls have no matching result.
+  let pending: ToolCallRecord[] = [];
 
   for (const event of events) {
     if (event.type === "session_start") {
@@ -144,23 +148,28 @@ export function rebuildMessages(
           type: "tool-call",
           toolCallId: tc.toolCallId,
           toolName: tc.toolName,
-          args: tc.args,
+          input: tc.args,
         });
       }
       if (content.length > 0) {
         messages.push({ role: "assistant", content });
       }
+      pending = [...event.toolCalls];
     } else if (event.type === "tool_call" || event.type === "tool_error") {
       // Collect consecutive tool results into one tool message
       const last = messages[messages.length - 1];
+      const call = pending[0]?.toolName === event.toolName ? pending.shift() : undefined;
       const resultContent = {
         type: "tool-result",
-        toolCallId: (event as { toolCallId?: string }).toolCallId || "",
+        toolCallId: (event as { toolCallId?: string }).toolCallId || call?.toolCallId || "",
         toolName: event.toolName,
-        result:
-          event.type === "tool_error"
-            ? `ERROR: ${event.error}`
-            : JSON.stringify(event.result),
+        output: {
+          type: "text",
+          value:
+            event.type === "tool_error"
+              ? `ERROR: ${event.error}`
+              : JSON.stringify(event.result),
+        },
       };
 
       if (last && last.role === "tool" && Array.isArray(last.content)) {

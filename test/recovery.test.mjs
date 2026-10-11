@@ -6,6 +6,7 @@ const { classifyLlmError, patientBackoffMs } = await import(dist("task/recovery.
 
 test("errors are classified by what can be done about them", () => {
   assert.equal(classifyLlmError(new Error("Invalid arguments for tool click: Type validation failed")), "bad_tool_args");
+  assert.equal(classifyLlmError(new Error("Invalid input for tool click: JSON parsing failed")), "bad_tool_args");
   assert.equal(classifyLlmError(new Error("claude CLI timed out after 600s")), "transient");
   assert.equal(classifyLlmError(new Error("fetch failed")), "transient");
   assert.equal(classifyLlmError(new Error("429 Too Many Requests")), "provider");

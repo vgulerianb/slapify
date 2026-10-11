@@ -125,7 +125,7 @@ export class ActionReviewer {
       try {
         const res = await generateText({
           model: this.llm!,
-          system:
+          instructions:
             "You review a pending action against a policy, the way a sensible human moderator would. " +
             "Hold only clear violations of the policy as written. Opinions, general advice and common technical knowledge are fine; " +
             "invented facts, statistics or personal experiences are not. When in doubt about wording rather than substance, clear it. " +

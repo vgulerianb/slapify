@@ -342,7 +342,7 @@ export async function runFast(options: FastRunOptions): Promise<FastResult> {
         textCalls++;
         const res = await generateText({
           model: textModel,
-          system: TEXT_SYSTEM,
+          instructions: TEXT_SYSTEM,
           prompt: JSON.stringify({
             goal: options.goal,
             field: { label: labels[ref], value: page.candidates.find((c) => c.ref === ref)?.state?.value || "" },

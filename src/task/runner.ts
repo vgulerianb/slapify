@@ -2,7 +2,8 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import chalk from "chalk";
-import { generateText } from "ai";
+import { generateText, zodSchema } from "ai";
+import type { ModelMessage } from "ai";
 import cron from "node-cron";
 import { createSession as createWreqSession } from "wreq-js";
 import { BrowserAgent } from "../browser/agent.js";
@@ -1417,7 +1418,7 @@ class ToolExecutor {
         if (this.customTools && this.customTools[toolName] && typeof this.customTools[toolName].execute === "function") {
           try {
             // Call the Vercel AI SDK execute() function attached to the tool
-            const res = await this.customTools[toolName].execute(args, { toolCallId: "custom" });
+            const res = await this.customTools[toolName].execute(args, { toolCallId: "custom", messages: [] });
             return res;
           } catch (e: any) {
             return { ok: false, error: `Custom tool '${toolName}' failed: ${e.message}` };
@@ -1521,7 +1522,7 @@ class ToolExecutor {
         role: "user",
         content: [
           { type: "text", text: `These are screenshots from a browser automation session (a website, web app or video game shown in the browser). Describe what is on screen factually, for the agent operating it. ${question}` },
-          ...paths.map((p) => ({ type: "image", image: fs.readFileSync(p) })),
+          ...paths.map((p) => ({ type: "file", mediaType: "image", data: fs.readFileSync(p) })),
         ],
       }],
     } as any);
@@ -1797,15 +1798,16 @@ export function pruneVisionHistory(
     const msg = messages[i];
     if (msg.role !== "tool" || !Array.isArray(msg.content)) continue;
     for (const part of msg.content as Array<Record<string, unknown>>) {
-      const content = part?.experimental_content as
-        | Array<Record<string, unknown>>
+      const output = part?.output as
+        | { type: string; value: Array<Record<string, unknown>> }
         | undefined;
-      if (!Array.isArray(content)) continue;
-      if (!content.some((c) => c.type === "image")) continue;
+      if (output?.type !== "content" || !Array.isArray(output.value)) continue;
+      const content = output.value;
+      if (!content.some((c) => c.type === "file")) continue;
       seen++;
       if (seen > VISION_HISTORY_KEEP) {
-        part.experimental_content = content
-          .filter((c) => c.type !== "image")
+        output.value = content
+          .filter((c) => c.type !== "file")
           .concat([
             {
               type: "text",
@@ -1918,12 +1920,13 @@ export function pruneToolResultHistory(
     if (msg.role !== "tool" || !Array.isArray(msg.content)) continue;
     for (const part of msg.content as Array<Record<string, unknown>>) {
       const name = String(part?.toolName || "");
-      if (typeof part.result !== "string") continue;
+      const output = part?.output as { type: string; value: unknown } | undefined;
+      if (output?.type !== "text" || typeof output.value !== "string") continue;
 
       if (!HISTORY_HEAVY_TOOLS.has(name)) {
-        if (part.result.length > HISTORY_RESULT_CHAR_LIMIT) {
-          part.result =
-            part.result.slice(0, HISTORY_RESULT_CHAR_LIMIT) +
+        if (output.value.length > HISTORY_RESULT_CHAR_LIMIT) {
+          output.value =
+            output.value.slice(0, HISTORY_RESULT_CHAR_LIMIT) +
             `…[truncated in history]`;
         }
         continue;
@@ -1932,12 +1935,106 @@ export function pruneToolResultHistory(
       const nth = (seen.get(name) || 0) + 1;
       seen.set(name, nth);
       if (nth > keepRecent) {
-        part.result = JSON.stringify({
+        output.value = JSON.stringify({
           note: `[an older ${name}() result was dropped from history to save space. This does NOT mean the page was empty — call ${name}() again if you need it now.]`,
         });
       }
     }
   }
+}
+
+/**
+ * Give every tool call in the history a result.
+ *
+ * The AI SDK refuses to send a history in which a tool call has no result. A
+ * turn that fails part-way through its tool calls leaves exactly that, as
+ * does a resumed session whose process was killed mid-turn, and without this
+ * every later turn would fail the same way. Each missing result says the call
+ * may or may not have happened, so the model checks before repeating it.
+ */
+export function closeDanglingToolCalls(
+  messages: Array<{ role: string; content: unknown }>
+): void {
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    if (msg.role !== "assistant" || !Array.isArray(msg.content)) continue;
+    const calls = (msg.content as Array<Record<string, unknown>>).filter(
+      (part) => part?.type === "tool-call"
+    );
+    if (calls.length === 0) continue;
+    let results = messages[i + 1];
+    if (results?.role !== "tool" || !Array.isArray(results.content)) {
+      results = { role: "tool", content: [] };
+      messages.splice(i + 1, 0, results);
+    }
+    const parts = results.content as Array<Record<string, unknown>>;
+    const answered = new Set(parts.map((part) => part?.toolCallId));
+    for (const call of calls) {
+      if (answered.has(call.toolCallId)) continue;
+      parts.push({
+        type: "tool-result",
+        toolCallId: call.toolCallId,
+        toolName: call.toolName,
+        output: {
+          type: "text",
+          value: JSON.stringify({
+            ok: false,
+            error: "No result was recorded for this call: the step failed before its results were saved. It may or may not have happened, so check before repeating it.",
+          }),
+        },
+      });
+    }
+  }
+}
+
+/**
+ * Providers whose tool results can carry an image. The others (OpenAI-style
+ * chat APIs, Groq, Mistral) would serialise the base64 into the result's text,
+ * so they get the text alone.
+ */
+const TOOL_RESULT_IMAGE_PROVIDERS = new Set(["anthropic", "google", "codex"]);
+
+/** The history as sent to a provider: screenshots stripped from tool results when it can't take them. */
+export function historyForProvider(
+  messages: Array<{ role: string; content: unknown }>,
+  provider: string
+): Array<{ role: string; content: unknown }> {
+  if (TOOL_RESULT_IMAGE_PROVIDERS.has(provider)) return messages;
+  return messages.map((msg) => {
+    if (msg.role !== "tool" || !Array.isArray(msg.content)) return msg;
+    return {
+      ...msg,
+      content: (msg.content as Array<Record<string, unknown>>).map((part) => {
+        const output = part?.output as
+          | { type: string; value: Array<{ type: string; text?: string }> }
+          | undefined;
+        if (output?.type !== "content") return part;
+        const text = output.value
+          .filter((c) => c.type === "text")
+          .map((c) => c.text)
+          .join("\n");
+        return { ...part, output: { type: "text", value: text } };
+      }),
+    };
+  });
+}
+
+/**
+ * A plugin tool as the model is offered it. Tools written for AI SDK 3 name
+ * their schema `parameters`; current ones use `inputSchema`. Both work.
+ *
+ * `execute` is left out on purpose: the runner runs custom tools itself,
+ * after admission and review. Handing it to the SDK made the SDK run every
+ * custom tool call as well, so each one ran twice.
+ */
+export function pluginToolDefinition(t: Record<string, any>): Record<string, unknown> {
+  const { execute: _execute, parameters, ...definition } = t;
+  let schema = t.inputSchema ?? parameters;
+  // zod before 3.24 lacks the standard-schema marker the SDK recognises it by.
+  if (schema && !("~standard" in schema) && typeof schema.safeParseAsync === "function") {
+    schema = zodSchema(schema);
+  }
+  return { ...definition, inputSchema: schema };
 }
 
 // ─── Context compaction ───────────────────────────────────────────────────────
@@ -2286,8 +2383,9 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
         const fileUrl = urlConfig.pathToFileURL(absolutePath).href;
         const exported = await import(fileUrl);
         for (const [key, val] of Object.entries(exported)) {
-          // Crude check if it's a Vercel AI SDK tool (has parameters and an execute function)
-          if (val && typeof val === "object" && "parameters" in val && "execute" in val) {
+          // Crude check if it's a Vercel AI SDK tool (has a schema and an execute
+          // function). The schema is `inputSchema`, or `parameters` in AI SDK 3.
+          if (val && typeof val === "object" && ("inputSchema" in val || "parameters" in val) && "execute" in val) {
             customTools[key] = val;
           }
         }
@@ -2304,7 +2402,9 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
     ...taskTools,
     ...(jevToolsOn ? jevTools : {}),
     ...(jevToolsOn && visionEnabled ? pursueTools : {}),
-    ...customTools,
+    ...Object.fromEntries(
+      Object.entries(customTools).map(([name, t]) => [name, pluginToolDefinition(t)])
+    ),
   };
 
   const executor = new ToolExecutor(
@@ -2437,6 +2537,8 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
       if (visionEnabled) pruneVisionHistory(messages);
       // Drop stale heavy tool results, keeping the newest of each intact.
       pruneToolResultHistory(messages);
+      // The SDK refuses a history with a tool call left unanswered.
+      closeDanglingToolCalls(messages);
 
       // ── THINK ──────────────────────────────────────────────────────────
       let result;
@@ -2449,10 +2551,15 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
         try {
           result = await generateText({
             model,
-            system: systemPrompt,
-            messages: messages as Parameters<typeof generateText>[0]["messages"],
+            instructions: systemPrompt,
+            messages: historyForProvider(messages, llmConfigs[modelIndex].provider) as ModelMessage[],
             tools: mergedTools,
           });
+          // A tool call with invalid arguments (or for an unknown tool) comes
+          // back flagged instead of being thrown. Throw it, so it is handled
+          // below exactly as before.
+          const invalid = result.toolCalls.find((tc) => tc.invalid);
+          if (invalid) throw invalid.error;
           transientRetries = 0;
           badArgRetries = 0;
           break; // Success
@@ -2539,7 +2646,7 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
         (tc) => ({
           toolCallId: tc.toolCallId,
           toolName: tc.toolName,
-          args: tc.args as Record<string, unknown>,
+          args: tc.input as Record<string, unknown>,
         })
       );
 
@@ -2547,10 +2654,11 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
         type: "llm_response",
         text: result.text || "",
         toolCalls: toolCallRecords,
+        // Logged under slapify's own names, which predate the SDK's rename.
         usage: result.usage
           ? {
-            promptTokens: result.usage.promptTokens,
-            completionTokens: result.usage.completionTokens,
+            promptTokens: result.usage.inputTokens ?? 0,
+            completionTokens: result.usage.outputTokens ?? 0,
           }
           : undefined,
         ts: new Date().toISOString(),
@@ -2571,7 +2679,7 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
           type: "tool-call",
           toolCallId: tc.toolCallId,
           toolName: tc.toolName,
-          args: tc.args,
+          input: tc.input,
         });
       }
       if (assistantContent.length > 0) {
@@ -2630,7 +2738,7 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
 
       for (const tc of result.toolCalls) {
         const toolName = tc.toolName as string;
-        const args = tc.args as Record<string, unknown>;
+        const args = tc.input as Record<string, unknown>;
 
         // Persistent tasks never finish on the model's say-so.
         if (toolName === "done" && persistent) {
@@ -2640,7 +2748,7 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
             do_next: "Finish the current cycle with status_update(), then sleep_until() and start the next one.",
           };
           appendEvent(session.id, redactSecrets({ type: "tool_call" as const, toolName, args, result: refused, ts: new Date().toISOString() }, executor.secrets()));
-          toolResultContent.push({ type: "tool-result", toolCallId: tc.toolCallId, toolName, result: JSON.stringify(refused) });
+          toolResultContent.push({ type: "tool-result", toolCallId: tc.toolCallId, toolName, output: { type: "text", value: JSON.stringify(refused) } });
           continue;
         }
 
@@ -2665,7 +2773,7 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
             type: "tool-result",
             toolCallId: tc.toolCallId,
             toolName,
-            result: JSON.stringify({ ok: true }),
+            output: { type: "text", value: JSON.stringify({ ok: true }) },
           });
           appendEvent(session.id, {
             type: "tool_call",
@@ -2695,7 +2803,7 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
               type: "tool-result",
               toolCallId: tc.toolCallId,
               toolName,
-              result: JSON.stringify(stale),
+              output: { type: "text", value: JSON.stringify(stale) },
             });
             continue;
           }
@@ -2719,7 +2827,7 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
             type: "tool-result",
             toolCallId: tc.toolCallId,
             toolName,
-            result: JSON.stringify(admitted.heldResult),
+            output: { type: "text", value: JSON.stringify(admitted.heldResult) },
           });
           continue;
         }
@@ -2753,7 +2861,7 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
                 .catch(() => { });
             }
             appendEvent(session.id, redactSecrets({ type: "tool_call" as const, toolName, args, result: held, ts: new Date().toISOString() }, executor.secrets()));
-            toolResultContent.push({ type: "tool-result", toolCallId: tc.toolCallId, toolName, result: JSON.stringify(held) });
+            toolResultContent.push({ type: "tool-result", toolCallId: tc.toolCallId, toolName, output: { type: "text", value: JSON.stringify(held) } });
             continue;
           }
         }
@@ -2821,19 +2929,19 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
             type: "tool-result",
             toolCallId: tc.toolCallId,
             toolName,
-            result: resultStrForHistory,
-            ...(visionImage
+            output: visionImage
               ? {
-                experimental_content: [
-                  { type: "text" as const, text: resultStrForHistory },
+                type: "content",
+                value: [
+                  { type: "text", text: resultStrForHistory },
                   {
-                    type: "image" as const,
-                    data: visionImage.data,
-                    mimeType: visionImage.mimeType,
+                    type: "file",
+                    mediaType: visionImage.mimeType,
+                    data: { type: "data", data: visionImage.data },
                   },
                 ],
               }
-              : {}),
+              : { type: "text", value: resultStrForHistory },
           });
         } catch (err: any) {
           const errorMsg = err?.message || String(err);
@@ -2851,7 +2959,7 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
             type: "tool-result",
             toolCallId: tc.toolCallId,
             toolName,
-            result: JSON.stringify(guidance ? withGuidance(failed, guidance) : failed),
+            output: { type: "text", value: JSON.stringify(guidance ? withGuidance(failed, guidance) : failed) },
           });
         }
       }

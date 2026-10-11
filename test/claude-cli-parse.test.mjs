@@ -10,7 +10,7 @@ const names = (r) => r.toolCalls.map((c) => c.toolName);
 test("intact tool-call JSON parses", () => {
   const r = extractToolCalls('{"tool_calls": [{"name": "navigate", "arguments": {"url": "https://x.com"}}]}');
   assert.deepEqual(names(r), ["navigate"]);
-  assert.deepEqual(JSON.parse(r.toolCalls[0].args), { url: "https://x.com" });
+  assert.deepEqual(JSON.parse(r.toolCalls[0].input), { url: "https://x.com" });
 });
 
 test("fenced JSON parses", () => {

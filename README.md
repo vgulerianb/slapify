@@ -694,7 +694,8 @@ How the image reaches the model depends on the provider:
 
 | Provider | Mechanism |
 | --- | --- |
-| `anthropic`, `openai`, `google`, `codex`, … | the image is attached inline as a real image part |
+| `anthropic`, `google`, `codex` | the image is attached inline as a real image part |
+| `openai`, `mistral`, `groq`, `ollama` | not supported: their chat APIs can't carry an image in a tool result, so the model gets the screenshot's text result only |
 | `claude-cli` | a separate one-shot `claude -p` call reads the image off disk and returns a description |
 
 The `claude-cli` path exists because `claude -p` accepts no inline image data. It *can* read an image with its own `Read` tool — but enabling `Read` on the agent's normal turns makes the model stop trusting the prompt-simulated tool protocol this provider runs on, and it starts answering in prose, which breaks every turn. Isolating vision in its own call keeps the protocol intact. The upside: vision works on Claude Code subscription auth, with no API key.
@@ -731,13 +732,15 @@ import { z } from "zod";
 
 export const queryProdDB = tool({
   description: "Execute a secure read-only SQL query.",
-  parameters: z.object({ sql: z.string() }),
+  inputSchema: z.object({ sql: z.string() }),
   execute: async ({ sql }) => {
     // Custom logic here...
     return { rows: [{ id: 1 }] };
   }
 });
 ```
+
+Tools written for older AI SDK versions, with `parameters` in place of `inputSchema`, keep working. Slapify calls `execute` itself, once per call, the same way it runs its own tools.
 
 When the Slapify agent hits an obstacle, it will seamlessly fall back to using your custom `queryProdDB` right alongside its native browser tools!
 
@@ -798,7 +801,7 @@ A few deliberate choices keep that reliable:
 
 - **It uses your plan's allowance.** A long-running task makes a `claude -p` call every turn, which adds up. When you hit your usage limit, every call fails instantly — the error shows `"duration_api_ms": 0`, meaning the request never reached the API. Retrying won't help until the limit resets.
 - **Slower per turn than the API**, since each call starts a process. Timeouts and dropped connections are retried 3 times with backoff; raise `timeout_seconds` if your tasks legitimately need longer turns.
-- **`temperature` and `maxTokens` are not supported** — they're ignored with a warning.
+- **`temperature` and `maxOutputTokens` are not supported** — they're ignored with a warning.
 - **Vision works**, through a separate one-shot call. See [Vision](#vision).
 
 ### Driving Slapify *from* Claude Code
@@ -1108,7 +1111,7 @@ your-project/
 
 ## Requirements
 
-- Node.js 18+
+- Node.js 22+ (the AI SDK requires it)
 - `agent-browser` (installed with slapify)
 - Optional: `lighthouse`, for Lighthouse lab scores in performance audits (`npm install lighthouse`)
 - An LLM: an API key for any supported provider, **or** [Claude Code](https://claude.com/claude-code) installed and logged in to use your Claude subscription, **or** a ChatGPT plan signed in with `npx slapify login codex`

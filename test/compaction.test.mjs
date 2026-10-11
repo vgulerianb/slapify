@@ -11,8 +11,8 @@ const { getModel } = await import(dist("ai/interpreter.js"));
 
 const goal = { role: "user", content: "GOAL: never use an em dash. Reply to 10 tweets per cycle." };
 const exchange = (i) => [
-  { role: "assistant", content: [{ type: "tool-call", toolCallId: `c${i}`, toolName: "remember", args: {} }] },
-  { role: "tool", content: [{ type: "tool-result", toolCallId: `c${i}`, toolName: "remember", result: "{}" }] },
+  { role: "assistant", content: [{ type: "tool-call", toolCallId: `c${i}`, toolName: "remember", input: {} }] },
+  { role: "tool", content: [{ type: "tool-result", toolCallId: `c${i}`, toolName: "remember", output: { type: "text", value: "{}" } }] },
 ];
 const history = (n) => [goal, ...Array.from({ length: n }, (_, i) => exchange(i)).flat()];
 

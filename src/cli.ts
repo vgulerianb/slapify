@@ -38,6 +38,11 @@ import yaml from "yaml";
 // Load environment variables
 dotenv.config();
 
+// The AI SDK now prints provider warnings (claude-cli and codex ignoring
+// maxOutputTokens, say) as process warnings on every call. They were never
+// shown before, and in the CLI they only break up the output.
+globalThis.AI_SDK_LOG_WARNINGS = false;
+
 /**
  * Get AI model based on config
  */
@@ -49,7 +54,7 @@ function getModelFromConfig(llmConfig: LLMConfig) {
     }
     case "openai": {
       const openai = createOpenAI({ apiKey: llmConfig.api_key });
-      return openai(llmConfig.model);
+      return openai.chat(llmConfig.model);
     }
     case "google": {
       const google = createGoogleGenerativeAI({ apiKey: llmConfig.api_key });
@@ -68,7 +73,7 @@ function getModelFromConfig(llmConfig: LLMConfig) {
         apiKey: "ollama",
         baseURL: llmConfig.base_url || "http://localhost:11434/v1",
       });
-      return ollama(llmConfig.model);
+      return ollama.chat(llmConfig.model);
     }
     case "claude-cli": {
       return createClaudeCliModel({
@@ -464,7 +469,7 @@ program
                 const response = await generateText({
                   model: testModel as any,
                   prompt: "Reply with only the word 'pong'",
-                  maxTokens: 10,
+                  maxOutputTokens: 10,
                 });
 
                 if (response.text.toLowerCase().includes("pong")) {
@@ -1297,7 +1302,7 @@ program
 
       const analysisResponse = await generateText({
         model: getModelFromConfig(Array.isArray(config.llm) ? config.llm[0] : config.llm) as any,
-        system: `You are a test automation expert. Analyze failing test steps and suggest fixes.
+        instructions: `You are a test automation expert. Analyze failing test steps and suggest fixes.
 
 Original flow file:
 \`\`\`
@@ -1334,7 +1339,7 @@ Respond with JSON:
   ]
 }`,
         prompt: "Analyze the failures and suggest specific fixes.",
-        maxTokens: 1500,
+        maxOutputTokens: 1500,
       });
 
       spinner.succeed("Analysis complete");

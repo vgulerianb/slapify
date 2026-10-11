@@ -2,15 +2,16 @@ import { spawn } from "child_process";
 import os from "os";
 import path from "path";
 import type {
-  LanguageModelV1,
-  LanguageModelV1CallOptions,
-  LanguageModelV1StreamPart,
-} from "ai";
-
-// Not re-exported by `ai` — derive from the LanguageModelV1 interface itself
-type GenerateResult = Awaited<ReturnType<LanguageModelV1["doGenerate"]>>;
-type CallWarning = NonNullable<GenerateResult["warnings"]>[number];
-type FinishReason = GenerateResult["finishReason"];
+  LanguageModelV4,
+  LanguageModelV4CallOptions,
+  LanguageModelV4Content,
+  LanguageModelV4FunctionTool,
+  LanguageModelV4StreamPart,
+  LanguageModelV4ToolCall,
+  LanguageModelV4ToolResultOutput,
+  LanguageModelV4Usage,
+  SharedV4Warning,
+} from "@ai-sdk/provider";
 
 /**
  * Claude Code CLI provider — runs prompts through the locally installed
@@ -24,23 +25,8 @@ type FinishReason = GenerateResult["finishReason"];
  * `claude -p` only returns text. We bridge that with prompt-based tool
  * calling — tool JSON schemas are embedded in the system prompt, the model
  * is instructed to answer with a `{"tool_calls": [...]}` JSON object when it
- * wants to act, and we parse that back into LanguageModelV1 tool calls.
+ * wants to act, and we parse that back into LanguageModelV4 tool calls.
  */
-
-// Structural equivalents of @ai-sdk/provider's tool types (not re-exported by `ai`)
-interface CliToolCall {
-  toolCallType: "function";
-  toolCallId: string;
-  toolName: string;
-  args: string;
-}
-
-interface CliToolDef {
-  type: "function";
-  name: string;
-  description?: string;
-  parameters: unknown;
-}
 
 export interface ClaudeCliSettings {
   /** Model alias or full id passed to `claude --model` (e.g. "sonnet", "opus", "haiku"). Omit to use the CLI default. */
@@ -58,15 +44,17 @@ const MAX_STDOUT_BYTES = 64 * 1024 * 1024;
 
 export function createClaudeCliModel(
   settings: ClaudeCliSettings = {}
-): LanguageModelV1 {
+): LanguageModelV4 {
   return new ClaudeCliLanguageModel(settings);
 }
 
-class ClaudeCliLanguageModel implements LanguageModelV1 {
-  readonly specificationVersion = "v1" as const;
+class ClaudeCliLanguageModel implements LanguageModelV4 {
+  readonly specificationVersion = "v4" as const;
   readonly provider = "claude-cli";
   readonly modelId: string;
-  readonly defaultObjectGenerationMode = "json" as const;
+  // Images never reach the CLI (see buildCliPrompt), so claim every URL and
+  // the SDK never downloads one on our behalf.
+  readonly supportedUrls = { "*/*": [/^/] };
 
   private settings: ClaudeCliSettings;
 
@@ -75,13 +63,13 @@ class ClaudeCliLanguageModel implements LanguageModelV1 {
     this.modelId = settings.model || "default";
   }
 
-  async doGenerate(options: LanguageModelV1CallOptions) {
-    const warnings: CallWarning[] = [];
-    if (options.maxTokens != null) {
-      warnings.push({ type: "unsupported-setting", setting: "maxTokens" });
+  async doGenerate(options: LanguageModelV4CallOptions) {
+    const warnings: SharedV4Warning[] = [];
+    if (options.maxOutputTokens != null) {
+      warnings.push({ type: "unsupported", feature: "maxOutputTokens" });
     }
     if (options.temperature != null) {
-      warnings.push({ type: "unsupported-setting", setting: "temperature" });
+      warnings.push({ type: "unsupported", feature: "temperature" });
     }
 
     const { systemPrompt, transcript } = buildCliPrompt(options);
@@ -90,34 +78,41 @@ class ClaudeCliLanguageModel implements LanguageModelV1 {
 
     const { text, toolCalls } = extractToolCalls(raw.resultText);
 
-    const finishReason: FinishReason =
-      toolCalls.length > 0 ? "tool-calls" : "stop";
+    const content: LanguageModelV4Content[] = [
+      ...(text ? [{ type: "text" as const, text }] : []),
+      ...toolCalls,
+    ];
 
     return {
-      text: text || undefined,
-      toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-      finishReason,
+      content,
+      finishReason: {
+        unified: toolCalls.length > 0 ? ("tool-calls" as const) : ("stop" as const),
+        raw: undefined,
+      },
       usage: raw.usage,
-      rawCall: {
-        rawPrompt: transcript,
-        rawSettings: { model: this.settings.model, systemPrompt },
+      request: {
+        body: { model: this.settings.model, systemPrompt, transcript },
       },
       warnings,
     };
   }
 
-  async doStream(options: LanguageModelV1CallOptions) {
+  async doStream(options: LanguageModelV4CallOptions) {
     // The CLI call is inherently non-streaming for our purposes — run
     // doGenerate and replay the result as a single-chunk stream.
     const result = await this.doGenerate(options);
 
-    const stream = new ReadableStream<LanguageModelV1StreamPart>({
+    const stream = new ReadableStream<LanguageModelV4StreamPart>({
       start(controller) {
-        if (result.text) {
-          controller.enqueue({ type: "text-delta", textDelta: result.text });
-        }
-        for (const tc of result.toolCalls || []) {
-          controller.enqueue({ type: "tool-call", ...tc });
+        controller.enqueue({ type: "stream-start", warnings: result.warnings });
+        for (const part of result.content) {
+          if (part.type === "text") {
+            controller.enqueue({ type: "text-start", id: "0" });
+            controller.enqueue({ type: "text-delta", id: "0", delta: part.text });
+            controller.enqueue({ type: "text-end", id: "0" });
+          } else if (part.type === "tool-call") {
+            controller.enqueue(part);
+          }
         }
         controller.enqueue({
           type: "finish",
@@ -128,7 +123,7 @@ class ClaudeCliLanguageModel implements LanguageModelV1 {
       },
     });
 
-    return { stream, rawCall: result.rawCall, warnings: result.warnings };
+    return { stream, request: result.request };
   }
 
   private runCli(
@@ -137,7 +132,7 @@ class ClaudeCliLanguageModel implements LanguageModelV1 {
     abortSignal?: AbortSignal
   ): Promise<{
     resultText: string;
-    usage: { promptTokens: number; completionTokens: number };
+    usage: LanguageModelV4Usage;
   }> {
     const bin = this.settings.cliPath || "claude";
     const args = [
@@ -257,8 +252,17 @@ class ClaudeCliLanguageModel implements LanguageModelV1 {
           resolve({
             resultText: typeof parsed.result === "string" ? parsed.result : "",
             usage: {
-              promptTokens: parsed.usage?.input_tokens ?? 0,
-              completionTokens: parsed.usage?.output_tokens ?? 0,
+              inputTokens: {
+                total: parsed.usage?.input_tokens ?? 0,
+                noCache: undefined,
+                cacheRead: undefined,
+                cacheWrite: undefined,
+              },
+              outputTokens: {
+                total: parsed.usage?.output_tokens ?? 0,
+                text: undefined,
+                reasoning: undefined,
+              },
             },
           });
         } catch {
@@ -289,7 +293,7 @@ class ClaudeCliLanguageModel implements LanguageModelV1 {
 
 // ─── Prompt serialization ─────────────────────────────────────────────────────
 
-function buildCliPrompt(options: LanguageModelV1CallOptions): {
+function buildCliPrompt(options: LanguageModelV4CallOptions): {
   systemPrompt: string;
   transcript: string;
 } {
@@ -321,7 +325,7 @@ function buildCliPrompt(options: LanguageModelV1CallOptions): {
             chunks.push(part.text);
           } else if (part.type === "tool-call") {
             chunks.push(
-              `<tool_call id="${part.toolCallId}" name="${part.toolName}">${JSON.stringify(part.args)}</tool_call>`
+              `<tool_call id="${part.toolCallId}" name="${part.toolName}">${JSON.stringify(part.input)}</tool_call>`
             );
           }
         }
@@ -330,13 +334,13 @@ function buildCliPrompt(options: LanguageModelV1CallOptions): {
       }
 
       case "tool": {
-        const chunks = message.content.map((part) => {
-          const result =
-            typeof part.result === "string"
-              ? part.result
-              : JSON.stringify(part.result);
-          return `<tool_result id="${part.toolCallId}" name="${part.toolName}">${result}</tool_result>`;
-        });
+        const chunks: string[] = [];
+        for (const part of message.content) {
+          if (part.type !== "tool-result") continue;
+          chunks.push(
+            `<tool_result id="${part.toolCallId}" name="${part.toolName}">${toolOutputText(part.output)}</tool_result>`
+          );
+        }
         transcriptParts.push(`[TOOL RESULTS]\n${chunks.join("\n")}`);
         break;
       }
@@ -344,17 +348,20 @@ function buildCliPrompt(options: LanguageModelV1CallOptions): {
   }
 
   // Tool-calling / output-format instructions live in the system prompt
-  if (options.mode.type === "regular" && options.mode.tools?.length) {
-    systemParts.push(buildToolInstructions(options.mode.tools as CliToolDef[]));
-  } else if (options.mode.type === "object-json") {
+  const tools = (options.tools || []).filter(
+    (t): t is LanguageModelV4FunctionTool => t.type === "function"
+  );
+  if (tools.length) {
+    // A forced tool choice is how generateObject's old tool mode reaches
+    // providers now, so it keeps the same insistence.
+    const forced =
+      options.toolChoice?.type === "tool"
+        ? `\nYou MUST call the '${options.toolChoice.toolName}' tool — a plain text answer is not acceptable.`
+        : "";
+    systemParts.push(buildToolInstructions(tools) + forced);
+  } else if (options.responseFormat?.type === "json") {
     systemParts.push(
       "Respond with ONLY a valid JSON object. No prose, no markdown fences."
-    );
-  } else if (options.mode.type === "object-tool") {
-    const tool = options.mode.tool as CliToolDef;
-    systemParts.push(
-      buildToolInstructions([tool]) +
-      `\nYou MUST call the '${tool.name}' tool — a plain text answer is not acceptable.`
     );
   }
 
@@ -366,6 +373,28 @@ function buildCliPrompt(options: LanguageModelV1CallOptions): {
     systemPrompt: systemParts.join("\n\n"),
     transcript: transcriptParts.join("\n\n"),
   };
+}
+
+/** A tool result as transcript text. Images are left out, as for user messages. */
+function toolOutputText(output: LanguageModelV4ToolResultOutput): string {
+  switch (output.type) {
+    case "text":
+    case "error-text":
+      return output.value;
+    case "json":
+    case "error-json":
+      return JSON.stringify(output.value);
+    case "execution-denied":
+      return output.reason ?? "Tool execution denied.";
+    case "content":
+      return output.value
+        .map((part) =>
+          part.type === "text"
+            ? part.text
+            : "[image omitted — this provider reads images via describeImage()]"
+        )
+        .join("\n");
+  }
 }
 
 /** Directory the one-shot vision call is allowed to read from. */
@@ -448,11 +477,11 @@ export async function describeImage(
   });
 }
 
-function buildToolInstructions(tools: CliToolDef[]): string {
+function buildToolInstructions(tools: LanguageModelV4FunctionTool[]): string {
   const defs = tools
     .map((t) =>
       JSON.stringify(
-        { name: t.name, description: t.description, parameters: t.parameters },
+        { name: t.name, description: t.description, parameters: t.inputSchema },
         null,
         1
       )
@@ -481,7 +510,7 @@ Rules:
 
 export function extractToolCalls(raw: string): {
   text: string;
-  toolCalls: CliToolCall[];
+  toolCalls: LanguageModelV4ToolCall[];
 } {
   let text = raw.trim();
 
@@ -518,13 +547,13 @@ export function extractToolCalls(raw: string): {
       return { text: raw.trim(), toolCalls: [] };
     }
 
-    const toolCalls: CliToolCall[] = parsed.tool_calls
+    const toolCalls: LanguageModelV4ToolCall[] = parsed.tool_calls
       .filter((tc: any) => tc && typeof tc.name === "string")
       .map((tc: any, i: number) => ({
-        toolCallType: "function" as const,
+        type: "tool-call" as const,
         toolCallId: `call_${Date.now()}_${i}`,
         toolName: tc.name,
-        args: JSON.stringify(tc.arguments ?? {}),
+        input: JSON.stringify(tc.arguments ?? {}),
       }));
 
     // Parsed, but nothing usable came out (e.g. a call cut off before its

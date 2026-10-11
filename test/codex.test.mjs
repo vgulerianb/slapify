@@ -73,10 +73,10 @@ test("prompt becomes instructions + Responses items, screenshots as real images"
   const { instructions, input } = toResponsesInput([
     { role: "system", content: "You are slapify." },
     { role: "user", content: [{ type: "text", text: "Go" }] },
-    { role: "assistant", content: [{ type: "text", text: "Looking" }, { type: "tool-call", toolCallId: "c1", toolName: "screenshot", args: {} }] },
-    { role: "tool", content: [{ type: "tool-result", toolCallId: "c1", toolName: "screenshot", result: { ok: true },
-      content: [{ type: "text", text: "shot" }, { type: "image", data: "AAAA", mimeType: "image/png" }] }] },
-    { role: "tool", content: [{ type: "tool-result", toolCallId: "c2", toolName: "click", result: { ok: true } }] },
+    { role: "assistant", content: [{ type: "text", text: "Looking" }, { type: "tool-call", toolCallId: "c1", toolName: "screenshot", input: {} }] },
+    { role: "tool", content: [{ type: "tool-result", toolCallId: "c1", toolName: "screenshot",
+      output: { type: "content", value: [{ type: "text", text: "shot" }, { type: "file", mediaType: "image/png", data: { type: "data", data: "AAAA" } }] } }] },
+    { role: "tool", content: [{ type: "tool-result", toolCallId: "c2", toolName: "click", output: { type: "json", value: { ok: true } } }] },
   ]);
   assert.equal(instructions, "You are slapify.");
   assert.deepEqual(input[0], { type: "message", role: "user", content: [{ type: "input_text", text: "Go" }] });
@@ -99,12 +99,12 @@ test("a tool call comes back as a native tool call, with usage", async () => {
     model: createCodexModel({ model: "gpt-5.4-mini", reasoningEffort: "low" }),
     system: "Be brief.",
     prompt: "Open example.com",
-    tools: { navigate: tool({ description: "Open a URL", parameters: z.object({ url: z.string() }) }) },
+    tools: { navigate: tool({ description: "Open a URL", inputSchema: z.object({ url: z.string() }) }) },
   });
   assert.equal(r.toolCalls.length, 1);
   assert.equal(r.toolCalls[0].toolName, "navigate");
-  assert.deepEqual(r.toolCalls[0].args, { url: "https://example.com" });
-  assert.equal(r.usage.promptTokens, 120);
+  assert.deepEqual(r.toolCalls[0].input, { url: "https://example.com" });
+  assert.equal(r.usage.inputTokens, 120);
 
   const req = seen[0];
   assert.equal(req.url, "/responses");

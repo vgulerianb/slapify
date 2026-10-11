@@ -12,7 +12,7 @@ export const taskTools = {
   navigate: tool({
     description:
       "Navigate the browser to a URL. Always call get_page_state() afterwards to see the result.",
-    parameters: z.object({
+    inputSchema: z.object({
       url: z.string().describe("Full URL including https://"),
     }),
   }),
@@ -21,14 +21,14 @@ export const taskTools = {
     description:
       "Get the current browser state: URL, page title, and an accessibility snapshot of all interactive elements with their ref IDs. Use ref IDs with click/type tools. " +
       "This lists only interactive elements — buttons, links, inputs — so body text (posts, articles, comments, search results) will NOT appear here. To read what a page actually says, call get_page_text().",
-    parameters: z.object({}),
+    inputSchema: z.object({}),
   }),
 
   get_links: tool({
     description:
       "List the links on the current page as {href, text} pairs. This is the ONLY way to discover URLs: get_page_state() names links but omits their href, and get_page_text() returns visible text with no URLs. " +
       "Use it to grab a permalink so you can navigate straight to a specific item instead of hunting for the right button in a long list. Filter with `contains` (e.g. '/status/' for tweet permalinks).",
-    parameters: z.object({
+    inputSchema: z.object({
       contains: z
         .string()
         .optional()
@@ -41,13 +41,13 @@ export const taskTools = {
     description:
       "Read the visible text of the current page. Use this whenever you need to know what the page SAYS rather than what you can click on: reading posts or tweets and their replies, articles, notifications, search results, error messages. " +
       "get_page_state() only reports interactive elements and omits body text, so an empty-looking snapshot does not mean the page is empty — call this to read it.",
-    parameters: z.object({}),
+    inputSchema: z.object({}),
   }),
 
   click: tool({
     description:
       "Click an element identified by its ref ID from get_page_state(). Use for buttons, links, checkboxes, etc.",
-    parameters: z.object({
+    inputSchema: z.object({
       ref: z.string().describe("The ref ID of the element to click"),
       description: z
         .string()
@@ -59,7 +59,7 @@ export const taskTools = {
   type: tool({
     description:
       "Type text into an input field identified by its ref ID. Clears the field first unless append is true.",
-    parameters: z.object({
+    inputSchema: z.object({
       ref: z.string().describe("The ref ID of the input element"),
       text: z.string().describe("The text to type"),
       append: z
@@ -72,7 +72,7 @@ export const taskTools = {
   press: tool({
     description:
       "Press a keyboard key or key combination (e.g. Enter, Tab, Escape, Control+A, ArrowDown).",
-    parameters: z.object({
+    inputSchema: z.object({
       key: z.string().describe("Key or key combo to press"),
     }),
   }),
@@ -80,14 +80,14 @@ export const taskTools = {
   hover: tool({
     description:
       "Move the mouse over an element by ref, to reveal menus, tooltips or controls that only appear on hover.",
-    parameters: z.object({
+    inputSchema: z.object({
       ref: z.string().describe("The ref ID of the element to hover"),
     }),
   }),
 
   double_click: tool({
     description: "Double-click an element by ref (e.g. to open an item or select a word).",
-    parameters: z.object({
+    inputSchema: z.object({
       ref: z.string().describe("The ref ID of the element"),
       description: z.string().optional().describe("Human-readable description of the element"),
     }),
@@ -96,7 +96,7 @@ export const taskTools = {
   set_checked: tool({
     description:
       "Set a checkbox, radio button or switch to checked or unchecked. Safer than click() for these: it is idempotent, so calling it twice never flips the state back.",
-    parameters: z.object({
+    inputSchema: z.object({
       ref: z.string().describe("The ref ID of the checkbox / radio / switch"),
       checked: z.boolean().describe("true to check, false to uncheck"),
     }),
@@ -105,7 +105,7 @@ export const taskTools = {
   select_option: tool({
     description:
       "Choose an option in a native <select> dropdown (a combobox in get_page_state()). Pass the option's visible label or its value.",
-    parameters: z.object({
+    inputSchema: z.object({
       ref: z.string().describe("The ref ID of the select / combobox"),
       option: z.string().describe("The option label or value to choose"),
     }),
@@ -113,7 +113,7 @@ export const taskTools = {
 
   drag: tool({
     description: "Drag one element and drop it onto another (sortable lists, kanban boards, sliders).",
-    parameters: z.object({
+    inputSchema: z.object({
       source_ref: z.string().describe("The ref ID of the element to drag"),
       target_ref: z.string().describe("The ref ID of the element to drop onto"),
     }),
@@ -122,7 +122,7 @@ export const taskTools = {
   upload_file: tool({
     description:
       "Attach local files to a file input (the 'Choose file' / upload button). Only files in the configured uploads folder, or files you downloaded earlier in this task, can be uploaded; give a filename relative to the uploads folder or the path download_file returned.",
-    parameters: z.object({
+    inputSchema: z.object({
       ref: z.string().describe("The ref ID of the file input or upload button"),
       paths: z.array(z.string()).min(1).describe("Files to upload"),
     }),
@@ -131,7 +131,7 @@ export const taskTools = {
   download_file: tool({
     description:
       "Click an element that starts a download, and save the file. Returns the saved path and size; the path can be passed to upload_file later.",
-    parameters: z.object({
+    inputSchema: z.object({
       ref: z.string().describe("The ref ID of the download link or button"),
       filename: z.string().optional().describe("Name to save it as (optional)"),
     }),
@@ -141,7 +141,7 @@ export const taskTools = {
     description:
       "Hold one or more keys down together for a duration, then release them. Real key-down/key-up events, so this works where press() does not: games (hold W to move forward, W+A to turn), canvas apps and anything that reads held keys. " +
       "Keys: letters, digits, F1-F12, Enter, Escape, Space, Tab, Shift, Control, Alt, ArrowUp/Down/Left/Right. A short ms (80) is a tap. The page must have focus: click_at() on it first if keys seem to do nothing.",
-    parameters: z.object({
+    inputSchema: z.object({
       keys: z.array(z.string()).min(1).max(4).describe("Keys held together, e.g. ['w'] or ['w','a']"),
       ms: z.number().min(20).max(10000).describe("How long to hold them, in milliseconds"),
       look_for: z.string().optional().describe("Also look at the screen right after, and answer this question about it (saves a separate screenshot turn)"),
@@ -152,7 +152,7 @@ export const taskTools = {
   click_at: tool({
     description:
       "Click at a position in the viewport, in CSS pixels from the top-left (the same coordinates as a screenshot at 1x). For canvas apps and games, which have no element refs. Also gives that spot keyboard focus.",
-    parameters: z.object({
+    inputSchema: z.object({
       x: z.number().describe("Pixels from the left edge of the viewport"),
       y: z.number().describe("Pixels from the top edge of the viewport"),
       button: z.enum(["left", "right"]).optional(),
@@ -165,7 +165,7 @@ export const taskTools = {
     description:
       "Move the mouse pointer to a viewport position without clicking (hover menus, a cursor in canvas apps). " +
       "It cannot turn a 3D game camera that uses a captured mouse (pointer lock): those read relative motion this does not produce. Turn with the keys instead (usually A/D or the arrows).",
-    parameters: z.object({
+    inputSchema: z.object({
       x: z.number(),
       y: z.number(),
     }),
@@ -174,26 +174,26 @@ export const taskTools = {
   list_tabs: tool({
     description:
       "List open browser tabs with their ids, titles and URLs. Use when a click may have opened a new tab or window (OAuth sign-in, a popup, a checkout).",
-    parameters: z.object({}),
+    inputSchema: z.object({}),
   }),
 
   switch_tab: tool({
     description: "Make a tab the active one, by its id from list_tabs() (e.g. t2). Call get_page_state() afterwards.",
-    parameters: z.object({
+    inputSchema: z.object({
       id: z.string().describe("Tab id, e.g. t2"),
     }),
   }),
 
   close_tab: tool({
     description: "Close a tab by id, or the active tab when no id is given.",
-    parameters: z.object({
+    inputSchema: z.object({
       id: z.string().optional().describe("Tab id, e.g. t2"),
     }),
   }),
 
   scroll: tool({
     description: "Scroll the page in a direction.",
-    parameters: z.object({
+    inputSchema: z.object({
       direction: z.enum(["up", "down", "left", "right"]),
       amount: z.number().optional().describe("Pixels to scroll (default 300)"),
     }),
@@ -202,7 +202,7 @@ export const taskTools = {
   wait: tool({
     description:
       "Wait for a specified number of seconds. Use when waiting for page loads, animations, or time-sensitive operations.",
-    parameters: z.object({
+    inputSchema: z.object({
       seconds: z.number().min(0.1).max(60).describe("Seconds to wait"),
     }),
   }),
@@ -212,7 +212,7 @@ export const taskTools = {
       "Look at the current page as an image. Use it when text is not enough: a CAPTCHA, a chart, an image-only post, or a layout that looks wrong and you want to see why. " +
       "For reading text, prefer get_page_text() — it is cheaper and gives exact characters. " +
       "If vision is disabled the image is only saved to disk and you will be told you cannot see it.",
-    parameters: z.object({
+    inputSchema: z.object({
       description: z
         .string()
         .optional()
@@ -228,12 +228,12 @@ export const taskTools = {
 
   reload: tool({
     description: "Reload the current page.",
-    parameters: z.object({}),
+    inputSchema: z.object({}),
   }),
 
   go_back: tool({
     description: "Navigate back to the previous page.",
-    parameters: z.object({}),
+    inputSchema: z.object({}),
   }),
 
   // ── Credentials ──────────────────────────────────────────────────────────
@@ -242,7 +242,7 @@ export const taskTools = {
     description:
       "List all available credential profiles and their types (e.g. login-form, inject, oauth). " +
       "Call this when you reach a login page or need to authenticate — the agent picks the right profile automatically.",
-    parameters: z.object({}),
+    inputSchema: z.object({}),
   }),
 
   inject_credentials: tool({
@@ -250,7 +250,7 @@ export const taskTools = {
       "Inject a credential profile into the browser (sets cookies, localStorage, sessionStorage) and reload. " +
       "Use for 'inject' type profiles. After injection call get_page_state() to verify login status. " +
       "If the injected session is expired (redirected to login page), fall back to fill_login_form.",
-    parameters: z.object({
+    inputSchema: z.object({
       profile_name: z
         .string()
         .describe("The name of the credential profile to inject"),
@@ -262,7 +262,7 @@ export const taskTools = {
       "Fill and submit a login form using credentials from a profile. " +
       "Use for 'login-form' type profiles. " +
       "After verifying login succeeded, call save_credentials(capture_from_browser: true) to save the session.",
-    parameters: z.object({
+    inputSchema: z.object({
       profile_name: z
         .string()
         .describe("The name of the credential profile to use"),
@@ -274,7 +274,7 @@ export const taskTools = {
       "Get the current one-time code (2FA / OTP) for a credential profile that has one configured (hasOtp in list_credential_profiles): " +
       "the live authenticator (TOTP) code, or the profile's fixed test code. Call it when the site asks for the code, usually right after the password step, " +
       "and type it straight away: TOTP codes change every 30 seconds. Use this instead of ask_user() whenever the profile has a code configured.",
-    parameters: z.object({
+    inputSchema: z.object({
       profile_name: z
         .string()
         .describe("The name of the credential profile to get the code for"),
@@ -287,7 +287,7 @@ export const taskTools = {
     description:
       "Store a piece of information in persistent memory that survives across iterations and sessions. " +
       "Use for important findings, extracted data, or state you'll need later.",
-    parameters: z.object({
+    inputSchema: z.object({
       key: z.string().describe("Unique key for this memory"),
       value: z
         .string()
@@ -297,14 +297,14 @@ export const taskTools = {
 
   recall: tool({
     description: "Retrieve a previously stored memory value by key.",
-    parameters: z.object({
+    inputSchema: z.object({
       key: z.string().describe("The memory key to retrieve"),
     }),
   }),
 
   list_memories: tool({
     description: "List all keys currently stored in memory.",
-    parameters: z.object({}),
+    inputSchema: z.object({}),
   }),
 
   // ── Scheduling / Time ─────────────────────────────────────────────────────
@@ -315,7 +315,7 @@ export const taskTools = {
       "For example: monitor every 30 minutes, check daily at 9am, etc. " +
       "The process will stay alive and re-run the goal at each interval. " +
       "Examples: '*/30 * * * *' every 30 min, '0 9 * * *' every day at 9am.",
-    parameters: z.object({
+    inputSchema: z.object({
       cron: z
         .string()
         .describe(
@@ -334,7 +334,7 @@ export const taskTools = {
       "Pause the agent until a specific time or after a duration, then continue. " +
       "Use when you need to wait before doing something (e.g. 'try again in 5 minutes', 'wait until 2pm'). " +
       "Provide an ISO datetime string or a natural phrase like '5 minutes', '1 hour', 'tomorrow 9am'.",
-    parameters: z.object({
+    inputSchema: z.object({
       until: z
         .string()
         .describe(
@@ -352,7 +352,7 @@ export const taskTools = {
       "Tries: reCAPTCHA v2 checkbox click, audio challenge fallback. " +
       "Call get_page_state() first to confirm a CAPTCHA is present. " +
       "Returns whether it succeeded and the updated page state.",
-    parameters: z.object({
+    inputSchema: z.object({
       type: z
         .enum(["recaptcha_v2", "image", "text", "auto"])
         .optional()
@@ -368,7 +368,7 @@ export const taskTools = {
       "Uses Chrome TLS fingerprint impersonation (wreq-js) to bypass Cloudflare and bot detection. " +
       "Much faster than browser navigation. Try this first for any data lookup — " +
       "public APIs for prices, weather, news, finance, etc. usually return JSON directly.",
-    parameters: z.object({
+    inputSchema: z.object({
       url: z.string().describe("URL to fetch"),
       headers: z
         .record(z.string())
@@ -384,7 +384,7 @@ export const taskTools = {
       "Post a visible status message to the user. Use this for long-running tasks to keep " +
       "the user informed — e.g. when starting a scheduled check, when something interesting " +
       "is found, or when waiting before the next run. This always shows regardless of debug mode.",
-    parameters: z.object({
+    inputSchema: z.object({
       message: z.string().describe("The message to show the user"),
     }),
   }),
@@ -395,7 +395,7 @@ export const taskTools = {
       "that is not available elsewhere — e.g. an OTP, a 2FA code, a missing password, " +
       "a clarification about what to do next, or confirmation before a destructive action. " +
       "The task pauses until the user replies. Returns the user's answer as a string.",
-    parameters: z.object({
+    inputSchema: z.object({
       question: z.string().describe("The question to ask the user"),
       hint: z
         .string()
@@ -413,7 +413,7 @@ export const taskTools = {
       "user confirms they want to save. " +
       "Use type='inject' for cookies/localStorage/sessionStorage. " +
       "Use type='login-form' for username+password.",
-    parameters: z.object({
+    inputSchema: z.object({
       profile_name: z
         .string()
         .describe("Name for this credential profile, e.g. 'linkedin', 'gmail'"),
@@ -444,7 +444,7 @@ export const taskTools = {
       "that click buttons/tabs to measure how much DOM activity each interaction triggers. " +
       "Use when the user asks about performance, speed, scores, or page health. " +
       "The deep audit runs in an isolated browser so the current session is not affected.",
-    parameters: z.object({
+    inputSchema: z.object({
       url: z.string().describe("URL to audit"),
       lighthouse: z
         .boolean()
@@ -468,7 +468,7 @@ export const taskTools = {
       "For array schemas (e.g. list of news items), each call APPENDS new entries. " +
       "For object schemas, each call MERGES/UPDATES the existing object. " +
       "This tool is a no-op if no schema or output file was provided by the user.",
-    parameters: z.object({
+    inputSchema: z.object({
       data: z
         .record(z.unknown())
         .describe(
@@ -488,7 +488,7 @@ export const taskTools = {
     description:
       "Signal that the task is complete. Provide a clear summary of everything that was accomplished. " +
       "If save_flow is true, the agent's action history will be saved as a .flow file.",
-    parameters: z.object({
+    inputSchema: z.object({
       summary: z.string().describe("Detailed summary of what was accomplished"),
       save_flow: z
         .boolean()
@@ -509,7 +509,7 @@ export const jevTools = {
       "Much faster and cheaper than reading the whole get_page_state() snapshot yourself, and good at telling apart elements that look alike (a reply COUNT button vs the reply box, a placeholder vs the real input). " +
       "Returns a ref with a confidence. If `confident` is false, do not trust the ref: call get_page_state() and choose yourself. " +
       "Say what kind of element it is (text box, button, link, checkbox): only matching elements are considered. Pass `descriptions` to find several elements in one call.",
-    parameters: z.object({
+    inputSchema: z.object({
       description: z
         .string()
         .optional()
@@ -527,7 +527,7 @@ export const jevTools = {
       "Check whether a statement is true about what the current page says, and get a calibrated probability. " +
       "Use it for yes/no questions you would otherwise answer by reading the whole page: did my reply post, am I logged in, is this a login wall or an error page, is this tweet actually about TypeScript. " +
       "One call, no need to read the page text yourself. Treat probability >= 0.85 as yes and <= 0.15 as no; anything in between is uncertain, so look for yourself.",
-    parameters: z.object({
+    inputSchema: z.object({
       statement: z
         .string()
         .describe("A statement to test, phrased so 'true' means yes, e.g. 'My reply appears on this page', 'The user is logged in'"),
@@ -544,7 +544,7 @@ export const pursueTools = {
     description:
       "Hand a short physical sub-goal to a fast inner loop: it repeatedly looks at the screen, lets a fast decision model pick the next small move (forward, turn left/right, forward while turning, back up, interact, wait) and does it, about every 6 seconds, without asking you each time. " +
       "Use it in games and canvas apps once you know the movement keys, for things like 'walk to the red car and get in' or 'go through the door on the left'. It stops when the goal is done, it is stuck, it is unsure, or max_steps runs out, and returns what it did and the last view. Check the result before relying on it.",
-    parameters: z.object({
+    inputSchema: z.object({
       goal: z.string().describe("A short, concrete, visible sub-goal, e.g. 'walk up to the red car and get in'"),
       keys: z
         .object({ forward: z.string().optional(), back: z.string().optional(), left: z.string().optional(), right: z.string().optional(), interact: z.string().optional() })

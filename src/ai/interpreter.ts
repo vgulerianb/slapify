@@ -149,9 +149,6 @@ export function getModel(
           cleanUrl = cleanUrl.replace(/\/chat\/completions\/?$/, "");
         }
         openaiOpts.baseURL = cleanUrl;
-
-        // Vercel AI SDK needs 'compatible' mode for non-OpenAI gateways like OpenRouter/LiteLLM
-        openaiOpts.compatibility = "compatible";
       }
 
       // Support Vercel AI Gateway registry-style definitions e.g. "openai/gpt-4o"
@@ -160,8 +157,10 @@ export function getModel(
         modelName = modelName.substring(7);
       }
 
+      // .chat(): the Chat Completions API, which gateways like OpenRouter and
+      // LiteLLM speak. The provider's default is now the Responses API.
       const openai = createOpenAI(openaiOpts);
-      return openai(modelName) as Parameters<
+      return openai.chat(modelName) as Parameters<
         typeof generateText
       >[0]["model"];
     }
@@ -218,7 +217,7 @@ export function getModel(
           return response;
         }
       });
-      return ollama(config.model) as Parameters<
+      return ollama.chat(config.model) as Parameters<
         typeof generateText
       >[0]["model"];
     }
@@ -328,9 +327,9 @@ ${step.conditional
 
     const response = await generateText({
       model,
-      system: systemPrompt,
+      instructions: systemPrompt,
       prompt: userPrompt,
-      maxTokens: 1000,
+      maxOutputTokens: 1000,
     });
 
     try {
@@ -402,9 +401,9 @@ If no interruptions found, return: { "interruptions": [] }`;
 
     const response = await generateText({
       model,
-      system: systemPrompt,
+      instructions: systemPrompt,
       prompt: "Analyze this page for interruptions to auto-handle.",
-      maxTokens: 500,
+      maxOutputTokens: 500,
     });
 
     try {
@@ -448,9 +447,9 @@ If no login form found: { "found": false }`;
 
     const response = await generateText({
       model,
-      system: systemPrompt,
+      instructions: systemPrompt,
       prompt: "Find the login form elements on this page.",
-      maxTokens: 300,
+      maxOutputTokens: 300,
     });
 
     try {
@@ -497,9 +496,9 @@ If the page does not ask for a one-time code: { "found": false }`;
 
     const response = await generateText({
       model,
-      system: systemPrompt,
+      instructions: systemPrompt,
       prompt: "Find the one-time code input on this page.",
-      maxTokens: 300,
+      maxOutputTokens: 300,
     });
 
     try {
@@ -547,9 +546,9 @@ Or if not satisfied:
 
     const response = await generateText({
       model,
-      system: systemPrompt,
+      instructions: systemPrompt,
       prompt: `Verify this condition: "${condition}"`,
-      maxTokens: 300,
+      maxOutputTokens: 300,
     });
 
     try {
@@ -596,9 +595,9 @@ If no clickable captcha element is visible: { "found": false }`;
     try {
       const response = await generateText({
         model,
-        system: systemPrompt,
+        instructions: systemPrompt,
         prompt: "Find the captcha element to click.",
-        maxTokens: 200,
+        maxOutputTokens: 200,
       });
 
       const jsonMatch = response.text.match(/\{[\s\S]*\}/);

@@ -17,7 +17,7 @@ function scripted(responses, env = {}) {
   Object.assign(process.env, { FAKE_CLAUDE_SCRIPT: s, FAKE_CLAUDE_STATE: path.join(d, "n"), ...env });
   return getModel({ provider: "claude-cli", model: "t", cli_path: FAKE_CLAUDE, timeout_seconds: 5 });
 }
-const tools = { navigate: tool({ description: "go", parameters: z.object({ url: z.string() }) }) };
+const tools = { navigate: tool({ description: "go", inputSchema: z.object({ url: z.string() }) }) };
 
 test("CLI exiting before reading stdin does not crash the process (EPIPE)", async () => {
   let crashed = false;

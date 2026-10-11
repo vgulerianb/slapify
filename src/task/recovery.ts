@@ -25,10 +25,13 @@ export function classifyLlmError(error: unknown): LlmFailure {
   const msg = String(e?.message || error || "").toLowerCase();
   const name = String(e?.name || "").toLowerCase();
 
+  // "Invalid input for tool" / InvalidToolInputError is the AI SDK 5+ wording.
   if (
     msg.includes("invalid arguments for tool") ||
+    msg.includes("invalid input for tool") ||
     msg.includes("type validation failed") ||
-    name.includes("invalidtoolarguments")
+    name.includes("invalidtoolarguments") ||
+    name.includes("invalidtoolinput")
   ) {
     return "bad_tool_args";
   }

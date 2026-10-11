@@ -15,16 +15,19 @@
 
 import crypto from "crypto";
 import type {
-  LanguageModelV1,
-  LanguageModelV1CallOptions,
-  LanguageModelV1StreamPart,
-} from "ai";
+  LanguageModelV4,
+  LanguageModelV4CallOptions,
+  LanguageModelV4Content,
+  LanguageModelV4FinishReason,
+  LanguageModelV4Prompt,
+  LanguageModelV4StreamPart,
+  LanguageModelV4ToolCall,
+  LanguageModelV4ToolResultOutput,
+  LanguageModelV4Usage,
+  SharedV4FileData,
+  SharedV4Warning,
+} from "@ai-sdk/provider";
 import { getChatGPTAuth, isLoopbackUrl, ORIGINATOR, ChatGPTAuth } from "./chatgpt-auth.js";
-
-type GenerateResult = Awaited<ReturnType<LanguageModelV1["doGenerate"]>>;
-type CallWarning = NonNullable<GenerateResult["warnings"]>[number];
-type FinishReason = GenerateResult["finishReason"];
-type Prompt = LanguageModelV1CallOptions["prompt"];
 
 const CODEX_BASE = "https://chatgpt.com/backend-api/codex";
 const DEFAULT_TIMEOUT_SECONDS = 600;
@@ -57,7 +60,7 @@ function authHeaders(auth: ChatGPTAuth, sessionId?: string): Record<string, stri
   };
 }
 
-export function createCodexModel(settings: CodexSettings = {}): LanguageModelV1 {
+export function createCodexModel(settings: CodexSettings = {}): LanguageModelV4 {
   return new CodexLanguageModel(settings);
 }
 
@@ -86,12 +89,34 @@ function dataUrl(data: Uint8Array | URL | string, mimeType = "image/png"): strin
   return `data:${mimeType};base64,${Buffer.from(data).toString("base64")}`;
 }
 
+/** An image file part as a Responses `input_image`, or nothing for other files. */
+function imageInput(p: { mediaType: string; data: SharedV4FileData }): unknown[] {
+  if (!p.mediaType.startsWith("image")) return [];
+  // A bare "image" media type has no subtype to put in a data URL.
+  const mime = p.mediaType.includes("/") ? p.mediaType : undefined;
+  const src = p.data.type === "data" ? p.data.data : p.data.type === "url" ? p.data.url : null;
+  return src == null ? [] : [{ type: "input_image", detail: "auto", image_url: dataUrl(src, mime) }];
+}
+
 function stringify(v: unknown): string {
   return typeof v === "string" ? v : JSON.stringify(v ?? null);
 }
 
-/** LanguageModelV1 prompt → Responses `instructions` + `input` items. */
-export function toResponsesInput(prompt: Prompt): { instructions: string; input: unknown[] } {
+/** A non-content tool result as the string the Responses API expects. */
+function outputText(output: LanguageModelV4ToolResultOutput): string {
+  switch (output.type) {
+    case "text":
+    case "error-text":
+      return output.value;
+    case "execution-denied":
+      return output.reason ?? "Tool execution denied.";
+    default:
+      return stringify("value" in output ? output.value : null);
+  }
+}
+
+/** LanguageModelV4 prompt → Responses `instructions` + `input` items. */
+export function toResponsesInput(prompt: LanguageModelV4Prompt): { instructions: string; input: unknown[] } {
   const system: string[] = [];
   const input: unknown[] = [];
   for (const msg of prompt as any[]) {
@@ -103,8 +128,8 @@ export function toResponsesInput(prompt: Prompt): { instructions: string; input:
         const content = (msg.content as any[]).flatMap((p): unknown[] =>
           p.type === "text"
             ? [{ type: "input_text", text: p.text }]
-            : p.type === "image"
-              ? [{ type: "input_image", detail: "auto", image_url: dataUrl(p.image, p.mimeType) }]
+            : p.type === "file"
+              ? imageInput(p)
               : []
         );
         if (content.length) input.push({ type: "message", role: "user", content });
@@ -120,24 +145,25 @@ export function toResponsesInput(prompt: Prompt): { instructions: string; input:
               content: [{ type: "output_text", text: p.text }],
             });
           } else if (p.type === "tool-call") {
-            input.push({ type: "function_call", call_id: p.toolCallId, name: p.toolName, arguments: stringify(p.args) });
+            input.push({ type: "function_call", call_id: p.toolCallId, name: p.toolName, arguments: stringify(p.input) });
           }
         }
         break;
       case "tool":
         for (const p of msg.content as any[]) {
+          if (p.type !== "tool-result") continue;
           // Tool results that carry images (screenshots with vision on) go in
           // as a content array, exactly like fx does for its own tools.
-          const parts = Array.isArray(p.content) ? (p.content as any[]) : null;
-          const output = parts
-            ? parts.flatMap((c): unknown[] =>
+          const result = p.output as LanguageModelV4ToolResultOutput;
+          const output = result.type === "content"
+            ? result.value.flatMap((c): unknown[] =>
                 c.type === "text"
                   ? [{ type: "input_text", text: c.text }]
-                  : c.type === "image"
-                    ? [{ type: "input_image", detail: "auto", image_url: dataUrl(c.data, c.mimeType) }]
+                  : c.type === "file"
+                    ? imageInput(c)
                     : []
               )
-            : stringify(p.result);
+            : outputText(result);
           input.push({ type: "function_call_output", call_id: p.toolCallId, output });
         }
         break;
@@ -146,21 +172,18 @@ export function toResponsesInput(prompt: Prompt): { instructions: string; input:
   return { instructions: system.join("\n\n") || "You are a helpful assistant.", input };
 }
 
-function toResponsesTools(mode: LanguageModelV1CallOptions["mode"]): { tools?: unknown[]; tool_choice?: unknown } {
+function toResponsesTools(options: LanguageModelV4CallOptions): { tools?: unknown[]; tool_choice?: unknown } {
   const fn = (t: any) => ({
     type: "function",
     name: t.name,
     description: t.description || "",
-    parameters: t.parameters,
+    parameters: t.inputSchema,
     strict: false,
   });
-  if (mode.type === "object-tool") {
-    return { tools: [fn(mode.tool)], tool_choice: { type: "function", name: mode.tool.name } };
-  }
-  if (mode.type !== "regular" || !mode.tools?.length) return {};
-  const choice = mode.toolChoice;
+  if (!options.tools?.length) return {};
+  const choice = options.toolChoice;
   return {
-    tools: mode.tools.filter((t: any) => t.type === "function").map(fn),
+    tools: options.tools.filter((t) => t.type === "function").map(fn),
     tool_choice: !choice
       ? "auto"
       : choice.type === "tool"
@@ -171,8 +194,8 @@ function toResponsesTools(mode: LanguageModelV1CallOptions["mode"]): { tools?: u
 
 interface ParsedResponse {
   text: string;
-  toolCalls: Array<{ toolCallType: "function"; toolCallId: string; toolName: string; args: string }>;
-  usage: { promptTokens: number; completionTokens: number };
+  toolCalls: LanguageModelV4ToolCall[];
+  usage: LanguageModelV4Usage;
   incomplete?: string;
 }
 
@@ -258,10 +281,10 @@ export async function readResponsesStream(body: ReadableStream<Uint8Array>): Pro
   const toolCalls = items
     .filter((i) => i?.type === "function_call" && typeof i.name === "string")
     .map((i) => ({
-      toolCallType: "function" as const,
+      type: "tool-call" as const,
       toolCallId: i.call_id || i.id || crypto.randomUUID(),
       toolName: i.name,
-      args: typeof i.arguments === "string" && i.arguments.trim() ? i.arguments : "{}",
+      input: typeof i.arguments === "string" && i.arguments.trim() ? i.arguments : "{}",
     }));
   if (!final && !text && toolCalls.length === 0) {
     throw new Error("Codex stream ended without a response (timeout or dropped connection)");
@@ -270,19 +293,28 @@ export async function readResponsesStream(body: ReadableStream<Uint8Array>): Pro
     text,
     toolCalls,
     usage: {
-      promptTokens: Number(final?.usage?.input_tokens) || 0,
-      completionTokens: Number(final?.usage?.output_tokens) || 0,
+      inputTokens: {
+        total: Number(final?.usage?.input_tokens) || 0,
+        noCache: undefined,
+        cacheRead: undefined,
+        cacheWrite: undefined,
+      },
+      outputTokens: {
+        total: Number(final?.usage?.output_tokens) || 0,
+        text: undefined,
+        reasoning: undefined,
+      },
     },
     incomplete,
   };
 }
 
-class CodexLanguageModel implements LanguageModelV1 {
-  readonly specificationVersion = "v1" as const;
+class CodexLanguageModel implements LanguageModelV4 {
+  readonly specificationVersion = "v4" as const;
   readonly provider = "codex";
   readonly modelId: string;
-  readonly defaultObjectGenerationMode = "tool" as const;
-  readonly supportsImageUrls = false;
+  // No URL is passed through: the SDK downloads images and hands over bytes.
+  readonly supportedUrls = {};
   private readonly settings: CodexSettings;
   /** One session per model instance, like a Codex conversation. */
   private readonly sessionId = crypto.randomUUID();
@@ -292,19 +324,19 @@ class CodexLanguageModel implements LanguageModelV1 {
     this.modelId = settings.model || DEFAULT_CODEX_MODEL;
   }
 
-  async doGenerate(options: LanguageModelV1CallOptions) {
-    const warnings: CallWarning[] = [];
+  async doGenerate(options: LanguageModelV4CallOptions) {
+    const warnings: SharedV4Warning[] = [];
     // The Codex endpoint rejects max_output_tokens, and reasoning models
     // reject sampling settings, so these are dropped with a warning.
-    for (const setting of ["maxTokens", "temperature", "topP", "frequencyPenalty", "presencePenalty"] as const) {
-      if ((options as any)[setting] != null) warnings.push({ type: "unsupported-setting", setting });
+    for (const setting of ["maxOutputTokens", "temperature", "topP", "frequencyPenalty", "presencePenalty"] as const) {
+      if (options[setting] != null) warnings.push({ type: "unsupported", feature: setting });
     }
 
     const { instructions, input } = toResponsesInput(options.prompt);
     let extraInstructions = "";
-    if (options.mode.type === "object-json") {
+    if (options.responseFormat?.type === "json") {
       extraInstructions = "\n\nReply with a single JSON object only." +
-        (options.mode.schema ? ` It must match this JSON schema: ${JSON.stringify(options.mode.schema)}` : "");
+        (options.responseFormat.schema ? ` It must match this JSON schema: ${JSON.stringify(options.responseFormat.schema)}` : "");
     }
     const body = {
       model: this.modelId,
@@ -312,7 +344,7 @@ class CodexLanguageModel implements LanguageModelV1 {
       stream: true,
       instructions: instructions + extraInstructions,
       input,
-      ...toResponsesTools(options.mode),
+      ...toResponsesTools(options),
       parallel_tool_calls: true,
       ...(this.settings.reasoningEffort
         ? { reasoning: { effort: this.settings.reasoningEffort === "minimal" ? "low" : this.settings.reasoningEffort } }
@@ -320,17 +352,23 @@ class CodexLanguageModel implements LanguageModelV1 {
     };
 
     const parsed = await this.send(body, options.abortSignal);
-    const finishReason: FinishReason = parsed.toolCalls.length
-      ? "tool-calls"
-      : parsed.incomplete
-        ? parsed.incomplete.includes("content") ? "content-filter" : "length"
-        : "stop";
+    const finishReason: LanguageModelV4FinishReason = {
+      unified: parsed.toolCalls.length
+        ? "tool-calls"
+        : parsed.incomplete
+          ? parsed.incomplete.includes("content") ? "content-filter" : "length"
+          : "stop",
+      raw: parsed.incomplete,
+    };
+    const content: LanguageModelV4Content[] = [
+      ...(parsed.text ? [{ type: "text" as const, text: parsed.text }] : []),
+      ...parsed.toolCalls,
+    ];
     return {
-      text: parsed.text || undefined,
-      toolCalls: parsed.toolCalls.length ? parsed.toolCalls : undefined,
+      content,
       finishReason,
       usage: parsed.usage,
-      rawCall: { rawPrompt: input, rawSettings: { model: this.modelId, instructions } },
+      request: { body },
       warnings,
     };
   }
@@ -381,17 +419,25 @@ class CodexLanguageModel implements LanguageModelV1 {
     }
   }
 
-  async doStream(options: LanguageModelV1CallOptions) {
+  async doStream(options: LanguageModelV4CallOptions) {
     // The whole stream is read in doGenerate; replay it as one chunk.
     const result = await this.doGenerate(options);
-    const stream = new ReadableStream<LanguageModelV1StreamPart>({
+    const stream = new ReadableStream<LanguageModelV4StreamPart>({
       start(controller) {
-        if (result.text) controller.enqueue({ type: "text-delta", textDelta: result.text });
-        for (const tc of result.toolCalls || []) controller.enqueue({ type: "tool-call", ...tc });
+        controller.enqueue({ type: "stream-start", warnings: result.warnings });
+        for (const part of result.content) {
+          if (part.type === "text") {
+            controller.enqueue({ type: "text-start", id: "0" });
+            controller.enqueue({ type: "text-delta", id: "0", delta: part.text });
+            controller.enqueue({ type: "text-end", id: "0" });
+          } else if (part.type === "tool-call") {
+            controller.enqueue(part);
+          }
+        }
         controller.enqueue({ type: "finish", finishReason: result.finishReason, usage: result.usage });
         controller.close();
       },
     });
-    return { stream, rawCall: result.rawCall, warnings: result.warnings };
+    return { stream, request: result.request };
   }
 }
