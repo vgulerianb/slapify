@@ -95,7 +95,7 @@ npx slapify task "Reply to any unread Slack DMs with a friendly holding message"
 npx slapify task "..." --report           # generate HTML report on exit
 npx slapify task "..." --headed            # show the browser window
 npx slapify task "..." --debug             # verbose logs
-npx slapify task "..." --save-flow         # save steps as a reusable .flow file
+npx slapify task "..." --save-flow         # save steps as a reusable .flow file (in the current directory)
 npx slapify task "..." --max-iterations N  # cap agent loop iterations (default 400)
 npx slapify task "..." --stealth           # hide automation fingerprints (overrides config)
 npx slapify task "..." --no-stealth        # force stealth off even if config enables it
@@ -126,7 +126,7 @@ npx slapify server
 npx slapify server --headed --debug
 ```
 
-**Structured output (JSON schema)** — Have the agent write data that matches a schema to a file. Use `--schema` (inline JSON or path to a `.json` file) and `--output` (file path). The agent uses a `write_output` tool to append or update the file whenever it has new data — ideal for recurring tasks that keep updating a report.
+**Structured output (JSON schema)** — Have the agent write data that matches a schema to a file. Use `--schema` (inline JSON or path to a `.json` file) and `--output` (file path). The agent uses a `write_output` tool to append or update the file whenever it has new data — ideal for recurring tasks that keep updating a report. Each scheduled run adds to what earlier runs left in the file.
 
 ```bash
 # One-shot: write structured data once
@@ -300,11 +300,11 @@ slapify task "Audit the home, pricing, and about pages on vercel.com" --report
 ### Programmatic
 
 ```typescript
-import { runPerfAudit } from "slapify/perf";
-import { BrowserAgent } from "slapify";
+import { BrowserAgent, runPerfAudit } from "slapify";
 
-const browser = new BrowserAgent();
-await browser.launch();
+// There is no launch step: the browser starts on first use, and
+// runPerfAudit navigates to the URL itself.
+const browser = new BrowserAgent({ headless: true });
 
 const result = await runPerfAudit("https://myapp.com/pricing", browser, {
   lighthouse: true, // lab scores — Performance/A11y/SEO/Best Practices (default: true)
@@ -346,7 +346,8 @@ Go to https://myshop.com
 [Optional] Close cookie banner
 Click "Add to Cart" on the first product
 Go to checkout
-Log in                              # picks the right credential profile automatically
+# Picks the right credential profile automatically
+Log in
 Fill shipping address
 Click "Place Order"
 Verify "Order confirmed" appears
@@ -356,7 +357,7 @@ Verify "Order confirmed" appears
 
 | Syntax           | Example                                          |
 | ---------------- | ------------------------------------------------ |
-| Comment          | `# This is a comment`                            |
+| Comment          | `# This is a comment` (on its own line)          |
 | Required step    | `Click the login button`                         |
 | Optional step    | `[Optional] Close popup`                         |
 | Conditional      | `If "Accept cookies" appears, click Accept`      |
@@ -379,8 +380,11 @@ slapify run tests/ --headed
 # Generate HTML report with screenshots
 slapify run tests/ --report
 
-# Include performance audit in the report
+# Include performance audit in the report (not with --parallel)
 slapify run tests/ --report --performance
+
+# Use a different credentials file than .slapify/credentials.yaml
+slapify run tests/ --credentials staging-credentials.yaml
 
 # Run in parallel (4 workers by default)
 slapify run tests/ --parallel
@@ -412,7 +416,7 @@ slapify generate "test checkout on myshop.com" --dir tests/checkout
 slapify generate "sign up flow on myapp.com" --headed
 ```
 
-This is equivalent to `slapify task "..." --save-flow --dir tests/` — the saved `.flow` file is proven to work, not just AI-guessed from a page snapshot.
+It runs the goal as a task with `--save-flow` — the saved `.flow` file is proven to work, not just AI-guessed from a page snapshot. `slapify task "..." --save-flow` does the same but always writes the `.flow` file to the current directory; `generate` saves it to `--dir` (default `tests/`).
 
 ### Programmatic (JS/TS)
 
@@ -519,7 +523,8 @@ profiles:
     type: login-form
     username: admin@example.com
     password: ${ADMIN_PASSWORD}
-    totp_secret: JBSWY3DPEHPK3PXP # TOTP 2FA
+    totp_secret: JBSWY3DPEHPK3PXP # TOTP 2FA (base32, as your authenticator app shows it)
+    # fixed_otp: "000000"         # or a static code, for test environments
 
   # Skip login entirely — inject an existing session
   my-session:
@@ -536,8 +541,13 @@ profiles:
 In **task mode**, credentials are fully automatic:
 
 - The agent detects login forms and picks the right profile
+- If the site asks for a 2FA code and the profile has `totp_secret` (or `fixed_otp`), the agent gets the current code itself instead of asking you
 - If no profile matches, it asks you to enter credentials and offers to save them
 - Saved sessions are reused on future runs — no re-login needed
+
+In **flows**, a login step (`Login with admin credentials`, `Log in`) fills the form and, when the profile has `totp_secret` or `fixed_otp` and the site asks for a code, enters it.
+
+In both, cookies in `inject` profiles are set with their `domain` and `path` when given, otherwise for the current page.
 
 ### Persistent Browser Profiles (Anti-Bot)
 
@@ -867,7 +877,7 @@ LLM errors are classified. Bad tool arguments are handed back for correction. Ti
 
 ### Compaction
 
-When history nears the context limit, older turns are summarised. Two rules keep this from quietly changing the task: the original goal is always kept **verbatim** (a paraphrase of "never use an em dash" turned out to be much weaker than the original), and the cut never separates a tool call from its result.
+When history nears the context limit, older turns are summarised. Two rules keep this from quietly changing the task: the original goal is always kept **verbatim**, along with any memory it started with (`--memory-from`, scheduled runs), since a paraphrase of "never use an em dash" turned out to be much weaker than the original; and the cut never separates a tool call from its result.
 
 ---
 
@@ -911,7 +921,7 @@ jev:
 
 OpenAI Decisions answers the same three kinds of question (yes/no as `predicate`, `choice`, `score`) with calibrated probabilities, so Slapify translates its questions on the way out and the answers back on the way in. Every row in the table above works with either backend, unchanged. It needs an OpenAI API key; a ChatGPT plan sign-in doesn't cover it.
 
-`base_url`, `path` and `model` override the provider defaults (for a proxy, say; add `protocol: decisions` when the proxy fronts OpenAI); `min_confidence` (default 0.7) and `timeout_ms` (default 10000) tune it; and `use.tools`, `use.interruption_gate` and `use.verify_fast_path` switch individual integrations off. A misconfigured or unreachable Jev disables itself with a warning; the run carries on without it.
+`base_url`, `path` and `model` override the provider defaults (for a proxy, say; add `protocol: decisions` when the proxy fronts OpenAI); `min_confidence` (default 0.7) and `timeout_ms` (default 10000) tune it; and `use.tools`, `use.interruption_gate` and `use.verify_fast_path` switch individual integrations off. A misconfigured Jev (no `api_key`, or neither a `provider` nor a `base_url`) is switched off at startup with a warning, and the run carries on without it. A configured Jev that can't be reached stays on: each call that fails falls back to the LLM, the same as when Jev isn't sure. The exception is `slapify fast`, which needs Jev to drive and ends with an error if it can't get an answer.
 
 ---
 
@@ -996,7 +1006,7 @@ Other tips for long runs:
 
 ## LLM Providers
 
-Supports 8 providers via Vercel AI SDK.
+Supports 8 providers. Six go through the Vercel AI SDK's provider packages: `anthropic`, `openai`, `google`, `mistral`, `groq` and `ollama` (via its OpenAI-compatible API). The other two are Slapify's own: `claude-cli` runs on your Claude subscription through the local `claude` binary, and `codex` runs on your ChatGPT plan.
 
 ### Claude subscription (no API key)
 

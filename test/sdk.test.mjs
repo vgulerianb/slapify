@@ -66,3 +66,10 @@ test("without any config the error is clear", async () => {
     await assert.rejects(() => createAgent().run("anything"), /No \.slapify directory/);
   });
 });
+
+test("runPerfAudit is importable from the main entry, as the README shows", async () => {
+  const sdk = await import(dist("index.js"));
+  assert.equal(typeof sdk.runPerfAudit, "function");
+  assert.equal(typeof sdk.BrowserAgent, "function");
+  assert.equal(typeof sdk.BrowserAgent.prototype.launch, "undefined", "there is no launch(); the README must not call it");
+});

@@ -3,10 +3,10 @@ export interface SlapifyConfig {
   /** Single model or an ordered fallback chain (tried in order on failure). */
   llm: LLMConfig | LLMConfig[];
   /**
-   * Send screenshots to the model as images so it can actually look at the
-   * page. Off by default: images cost a lot of tokens per call, and the
-   * `claude-cli` provider cannot carry them at all (it runs `claude -p`,
-   * which is text-only), so this needs an API-key provider.
+   * Let the model look at screenshots of the page. Off by default: images
+   * cost a lot of tokens per call. Most providers get the image inline; the
+   * `claude-cli` provider (`claude -p` takes no inline images) has each one
+   * read by a separate one-shot call (describeImage) and gets a description.
    */
   vision?: boolean;
   /**

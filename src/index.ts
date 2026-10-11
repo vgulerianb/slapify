@@ -30,6 +30,9 @@ export {
   getFlowSummary,
 } from "./parser/flow.js";
 export { BrowserAgent } from "./browser/agent.js";
+// Lighthouse is imported lazily inside the audit, so this costs nothing until used.
+export { runPerfAudit } from "./perf/audit.js";
+export type { PerfAuditResult, PerfAuditOptions } from "./perf/audit.js";
 export { AIInterpreter } from "./ai/interpreter.js";
 export { TestRunner } from "./runner/index.js";
 export { ReportGenerator } from "./report/generator.js";
