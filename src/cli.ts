@@ -1670,6 +1670,9 @@ program
   .option("--headed", "Show the browser window")
   .option("--stealth", "Hide automation fingerprints (overrides browser.stealth)")
   .option("--no-stealth", "Disable stealth even if browser.stealth is set")
+  .option("--time-limit <minutes>", "Stop the task after this many minutes, enforced by the harness", parseFloat)
+  .option("--record <dir>", "Record the run: annotated frames, video.webm (with ffmpeg) and replay.html")
+  .option("--live [port]", "With --record: watch the browser live at http://127.0.0.1:<port>/ (default 8790)")
   .option("--debug", "Show all tool calls and internal steps")
   .option("--report", "Generate an HTML report after the task completes")
   .option("--save-flow", "Save agent steps as a reusable .flow file when done")
@@ -1978,6 +1981,11 @@ program
           (options.report ? " — generating report..." : "")
         )
       );
+      {
+        const { finalizeRecording } = await import("./task/runner.js");
+        const replay = await finalizeRecording("Stopped: interrupted");
+        if (replay) console.log(chalk.cyan(`  🎬 Recording: ${replay}`));
+      }
       if (activeSession) {
         activeSession.status = "failed";
         activeSession.finalSummary = "Task interrupted by user (Ctrl+C).";
@@ -1989,6 +1997,8 @@ program
       process.exit(0);
     };
     process.once("SIGINT", onSigint);
+    // A kill (pkill, a supervisor stopping it) gets the same clean shutdown.
+    process.once("SIGTERM", onSigint);
 
     try {
       const stopSpinner = () => {
@@ -2029,6 +2039,9 @@ program
         sessionId: options.session,
         headed: options.headed,
         stealth: options.stealth,
+        timeLimitMinutes: options.timeLimit,
+        record: options.record,
+        livePort: options.live === undefined ? undefined : options.live === true ? 8790 : Number(options.live),
         saveFlow: options.saveFlow,
         maxIterations: options.maxIterations,
         schema: parsedSchema,
@@ -2109,6 +2122,7 @@ program
       stopSpinner();
 
       process.removeListener("SIGINT", onSigint);
+      process.removeListener("SIGTERM", onSigint);
 
       console.log(chalk.gray(`\n  Session: ${session.id}`));
       if (session.savedFlowPath) {
@@ -2133,6 +2147,7 @@ program
       console.log("");
     } catch (err: any) {
       process.removeListener("SIGINT", onSigint);
+      process.removeListener("SIGTERM", onSigint);
       clearInterval(spinnerInterval!);
       spinnerInterval = null;
       process.stdout.write("\x1b[2K\r");

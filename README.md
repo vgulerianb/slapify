@@ -579,6 +579,11 @@ files:
   uploads_dir: .slapify/uploads
   downloads_dir: .slapify/downloads
 
+# Rewrite text before the agent types it into a page (see "Text filters")
+text_filters:
+  " — ": ", "   # never type an em dash
+  "—": ", "
+
 report:
   format: html
   screenshots: true
@@ -619,6 +624,24 @@ How the image reaches the model depends on the provider:
 The `claude-cli` path exists because `claude -p` accepts no inline image data. It *can* read an image with its own `Read` tool — but enabling `Read` on the agent's normal turns makes the model stop trusting the prompt-simulated tool protocol this provider runs on, and it starts answering in prose, which breaks every turn. Isolating vision in its own call keeps the protocol intact. The upside: vision works on Claude Code subscription auth, with no API key.
 
 Only the most recent screenshot is kept in context — base64 images dominate token cost, and a stale screenshot is worth little. Older ones become a placeholder telling the agent to take a fresh one.
+
+## Text filters
+
+A rule in your prompt — "never use an em dash", "never mention pricing" — is followed most of the time, not every time. When something has to hold on *every* reply, put it in `text_filters` instead. Each entry is a literal find-and-replace applied inside the `type` tool, after the model writes the text and before it reaches the page:
+
+```yaml
+text_filters:
+  " — ": ", "    # em dash with spaces, the common case
+  "—": ", "      # bare em dash
+  " – ": " - "   # en dash with spaces
+  "–": "-"       # bare en dash
+```
+
+Entries run in order, so list the spaced variants first — that gives `point, the` rather than `point ,  the`.
+
+When a filter fires, the tool result tells the model its text was corrected, so it tends to stop making the mistake. But compliance no longer depends on that: the filter is the guarantee, the prompt rule just makes it fire less often.
+
+---
 
 ## Extensibility & Live Chat
 
@@ -721,6 +744,39 @@ claude -p "Run: npx slapify task 'Get the top 5 HN posts with titles and URLs' \
 ```
 
 If Slapify is *also* configured with the `claude-cli` provider, every Slapify turn spawns its own `claude -p` call. That works, but it's usage-heavy — for high-volume scripting, an API-key provider inside Slapify is the lighter setup.
+
+---
+
+## The harness
+
+Autonomy is the easy part; an agent that can do anything will eventually be about to do the wrong thing, or get stuck, or hit an outage at 3am. These are the pieces that make it safe to leave running. Several are adapted from ideas in [vercel-labs/fx](https://github.com/vercel-labs/fx), a coding agent, applied here to a browser.
+
+### Tool contracts
+
+Every call is classified before it runs as `read`, `navigate`, `mutate`, `irreversible` or `control`. Some tools are fixed (`get_page_text` is a read, `upload_file` is irreversible). Clicks and key presses are judged by what they touch: a click on a control labelled *Post*, *Send*, *Buy*, *Delete*, *Confirm* and so on is irreversible, a click on a tab is not, and `Meta+Enter` (the submit chord on most composers) is irreversible while `Enter` is not.
+
+### Tool admission
+
+Repetition isn't blocked. Blocking a read helps nobody, and on a feed of ten identical-looking posts, pressing the same "send" chord ten times is correct. Instead:
+
+- Calls are keyed by tool, arguments **and the page they run on**.
+- After two identical failures, the result gains a `guidance` field telling the model to change approach.
+- After three identical results from the same read, it is told nothing is changing.
+- The one hold: an irreversible action that already **succeeded** on this page isn't run again. That's the difference between a stuck agent and one that pays twice.
+
+### Action review
+
+With `review.enabled`, every irreversible action is checked against your `policy` just before it runs, together with the page it's on and the exact text it's about to publish. The answer is *clear* or *caution*; a caution holds the action and tells the agent why, so it can revise or skip.
+
+Review uses Jev when it's configured (well under a second per check, which is what makes reviewing every post affordable) and your main LLM otherwise. If no reviewer can answer, the action is **held** by default: failing open would make the safety check disappear exactly when something is already going wrong. Set `on_unavailable: allow` to change that.
+
+### Recovery
+
+LLM errors are classified. Bad tool arguments are handed back for correction. Timeouts and dropped connections are retried. Rate limits, quota and usage limits rotate to the next model in your `llm` list and, once every model has failed, wait patiently instead of exiting. A text reply that is really a broken tool call is not mistaken for a final answer. Only five failed turns *in a row* end a run.
+
+### Compaction
+
+When history nears the context limit, older turns are summarised. Two rules keep this from quietly changing the task: the original goal is always kept **verbatim** (a paraphrase of "never use an em dash" turned out to be much weaker than the original), and the cut never separates a tool call from its result.
 
 ---
 

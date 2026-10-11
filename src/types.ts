@@ -10,6 +10,14 @@ export interface SlapifyConfig {
    */
   vision?: boolean;
   /**
+   * Literal substitutions applied to any text the agent types, before it
+   * reaches the page. Style rules stated in a prompt are followed most of the
+   * time but not all of the time; anything that must hold every time belongs
+   * here, where it is enforced rather than requested.
+   * Example: { "—": ", " } to guarantee no em dashes are ever typed.
+   */
+  text_filters?: Record<string, string>;
+  /**
    * Optional Jev decision model. Speeds up narrow yes/no and "which one"
    * decisions (finding an element, checking a condition, skipping empty
    * popup checks) without replacing the main LLM, which still plans and

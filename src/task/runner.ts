@@ -61,6 +61,18 @@ const VISION_IMAGE_KEY = "__visionImage";
 // with a text placeholder — base64 images are the most expensive thing in the
 // context by a wide margin, and a stale screenshot has little value.
 const VISION_HISTORY_KEEP = 1;
+// How many times to hand a malformed tool call back to the model for
+// correction before giving up. The model occasionally emits a call with
+// missing required fields; that is a slip to correct, not a reason to end a
+// long-running task.
+const MAX_BAD_TOOL_ARG_RETRIES = 3;
+// Consecutive failed iterations before a run is considered wedged. Below this
+// the loop recovers in place, so one bad page or transient glitch cannot end a
+// task that is meant to run for hours.
+const MAX_CONSECUTIVE_ITERATION_ERRORS = 5;
+// How many times to ask for a clean reissue when a "final answer" still looks
+// like broken tool-call JSON, before accepting it as a genuine finish.
+const MAX_MANGLED_FINISH_RETRIES = 3;
 
 // System prompt is now built dynamically per-task by `src/task/prompt.ts`
 // using modular rule fragments from `src/task/rules/`.
@@ -529,12 +541,25 @@ class ToolExecutor {
 
       case "type": {
         const ref = args.ref as string;
-        const text = args.text as string;
+        const rawText = args.text as string;
         const append = args.append as boolean | undefined;
+
+        // Enforce configured substitutions here rather than trusting the
+        // prompt. Telling the model "never use an em dash" works most of the
+        // time; this makes it work every time.
+        const { text, replaced } = applyTextFilters(rawText, this.textFilters);
+
         if (!append) {
           await this.browser.fill(ref, text);
         } else {
           await this.browser.type(ref, text);
+        }
+        if (replaced.length > 0) {
+          return {
+            ok: true,
+            text,
+            note: `Your text contained ${replaced.join(", ")}, which is not allowed. It was corrected automatically before typing. Write it correctly next time so no correction is needed.`,
+          };
         }
         return { ok: true };
       }
@@ -1646,48 +1671,198 @@ function writeStructuredOutput(
 // ─── Tool result history trimming ────────────────────────────────────────────
 
 /**
- * Trim a tool result before it gets pushed into conversation history.
+ * Whether screenshots should be sent to the model as images.
  *
- * Two sources of bloat we address here:
- * 1. `get_page_state` returns a large DOM snapshot every time. Stale snapshots
- *    sitting in history from 5+ turns ago waste tokens. We strip the snapshot
- *    content but keep a breadcrumb so the model knows a page was visited.
- * 2. Large bodies (fetch_url HTML/JSON) are cap-truncated to HISTORY_RESULT_CHAR_LIMIT
- *    chars. The model already saw the full result in the current turn.
+ * Every supported provider can manage it, including `claude-cli`: `claude -p`
+ * takes no inline image data, but it can Read an image off disk, so that
+ * provider spills images to temp files and cites the paths.
  */
-function trimToolResultForHistory(
-  toolName: string,
-  result: unknown
-): unknown {
-  if (toolName === "get_page_state") {
-    // Keep the URL and title so the model knows where it was, but drop the
-    // giant snapshot string — the model will call get_page_state() again if needed.
-    const r = result as Record<string, unknown>;
-    return {
-      url: r.url,
-      title: r.title,
-      snapshot: "[snapshot omitted from history — call get_page_state() again if needed]",
-      refsCount: r.refsCount,
-    };
-  }
+export function resolveVision(config: SlapifyConfig): boolean {
+  return !!config.vision;
+}
 
-  // For everything else, serialise and cap the size
-  const str = typeof result === "string" ? result : JSON.stringify(result);
-  if (str.length > HISTORY_RESULT_CHAR_LIMIT) {
-    return str.slice(0, HISTORY_RESULT_CHAR_LIMIT) + `…[truncated in history, was ${str.length} chars]`;
+/**
+ * Remove the screenshot bytes from a tool result and return them.
+ *
+ * Mutates the result so the base64 payload can never be stringified into the
+ * text channel — it has to become a real image content part or nothing.
+ */
+export function takeVisionImage(
+  result: unknown
+): { data: string; mimeType: string } | null {
+  if (!result || typeof result !== "object") return null;
+  const r = result as Record<string, unknown>;
+  const img = r[VISION_IMAGE_KEY] as
+    | { data?: string; mimeType?: string }
+    | undefined;
+  delete r[VISION_IMAGE_KEY];
+  if (!img?.data) return null;
+  return { data: img.data, mimeType: img.mimeType || "image/png" };
+}
+
+/**
+ * Drop stale screenshots from history, keeping the most recent
+ * VISION_HISTORY_KEEP of them.
+ *
+ * Without this, every screenshot ever taken is re-sent on every subsequent
+ * turn — on a loop that runs indefinitely that grows without bound and is by
+ * far the largest cost in the context.
+ */
+export function pruneVisionHistory(
+  messages: Array<{ role: string; content: unknown }>
+): void {
+  let seen = 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg.role !== "tool" || !Array.isArray(msg.content)) continue;
+    for (const part of msg.content as Array<Record<string, unknown>>) {
+      const content = part?.experimental_content as
+        | Array<Record<string, unknown>>
+        | undefined;
+      if (!Array.isArray(content)) continue;
+      if (!content.some((c) => c.type === "image")) continue;
+      seen++;
+      if (seen > VISION_HISTORY_KEEP) {
+        part.experimental_content = content
+          .filter((c) => c.type !== "image")
+          .concat([
+            {
+              type: "text",
+              text: "[earlier screenshot dropped from history to save tokens — take a new one if you need to look again]",
+            },
+          ]);
+      }
+    }
   }
-  return result;
+}
+
+/**
+ * Apply configured literal substitutions to text the agent is about to type.
+ * Returns the corrected text plus which patterns actually fired, so the model
+ * can be told it got something wrong.
+ */
+export function applyTextFilters(
+  text: string,
+  filters: Record<string, string>
+): { text: string; replaced: string[] } {
+  let out = text;
+  const replaced: string[] = [];
+  for (const [find, replaceWith] of Object.entries(filters || {})) {
+    if (!find || !out.includes(find)) continue;
+    out = out.split(find).join(replaceWith);
+    replaced.push(JSON.stringify(find));
+  }
+  return { text: out, replaced };
+}
+
+/** The model used for LLM-based action review: the first in the fallback chain. */
+function llmConfigsForReview(config: SlapifyConfig): LLMConfig {
+  return Array.isArray(config.llm) ? config.llm[0] : config.llm;
+}
+
+/** Append admission guidance to a tool result without losing its content. */
+function withGuidance(result: unknown, guidance: string): unknown {
+  if (result && typeof result === "object" && !Array.isArray(result)) {
+    return { ...(result as object), guidance };
+  }
+  return `${typeof result === "string" ? result : JSON.stringify(result)}\n\n[guidance] ${guidance}`;
+}
+
+/** Tools whose results are large enough to be worth dropping once stale. */
+const HISTORY_HEAVY_TOOLS = new Set([
+  "get_page_state",
+  "get_page_text",
+  "get_links",
+  "find_element",
+  "check",
+  // press() results are tiny, but a long run makes thousands of them; only
+  // the latest one is worth keeping whole.
+  "press",
+  "fetch_url",
+  "screenshot",
+]);
+
+/**
+ * Trim OLD tool results in the message history.
+ *
+ * A page snapshot is ~25k characters, so keeping every one of them across a
+ * long run would blow the context. But the most recent result of each heavy
+ * tool has to survive intact: that is where the refs the model is about to
+ * act on live. Only older ones become placeholders.
+ */
+export function pruneToolResultHistory(
+  messages: Array<{ role: string; content: unknown }>,
+  keepRecent: number = 1
+): void {
+  const seen = new Map<string, number>();
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg.role !== "tool" || !Array.isArray(msg.content)) continue;
+    for (const part of msg.content as Array<Record<string, unknown>>) {
+      const name = String(part?.toolName || "");
+      if (typeof part.result !== "string") continue;
+
+      if (!HISTORY_HEAVY_TOOLS.has(name)) {
+        if (part.result.length > HISTORY_RESULT_CHAR_LIMIT) {
+          part.result =
+            part.result.slice(0, HISTORY_RESULT_CHAR_LIMIT) +
+            `…[truncated in history]`;
+        }
+        continue;
+      }
+
+      const nth = (seen.get(name) || 0) + 1;
+      seen.set(name, nth);
+      if (nth > keepRecent) {
+        part.result = JSON.stringify({
+          note: `[an older ${name}() result was dropped from history to save space. This does NOT mean the page was empty — call ${name}() again if you need it now.]`,
+        });
+      }
+    }
+  }
 }
 
 // ─── Context compaction ───────────────────────────────────────────────────────
 
-async function compactMessages(
+/**
+ * Where to cut the history for compaction.
+ *
+ * Two rules, both learned the hard way:
+ *  1. Index 0 is the goal, and it is never summarized. The goal is the only
+ *     place the user's instructions live, so paraphrasing it lets rules fade:
+ *     across three long runs, em dash violations were 0 in 81 replies before
+ *     the first compaction and 44 in 264 after.
+ *  2. The kept tail must start on a complete exchange. Cutting at an arbitrary
+ *     index can keep a tool result whose tool call was summarized away.
+ *
+ * Returns the index where the kept tail begins; everything in 1..cut-1 is
+ * summarized. Returns 1 when there is nothing to summarize.
+ */
+export function chooseCompactionCut(
+  messages: Array<{ role: string; content: unknown }>,
+  keepRecent: number
+): number {
+  let cut = Math.max(1, messages.length - keepRecent);
+  // Never start the tail on tool results: pull the cut back to their call.
+  while (cut > 1 && messages[cut]?.role === "tool") cut--;
+  return cut;
+}
+
+const SUMMARY_INSTRUCTIONS =
+  "Summarize the following agent conversation history into a compact but detailed summary. Include: what was accomplished, current state, important findings stored in memory, any failures and what was tried. This summary will replace the history to save context.\n\n" +
+  "Do NOT restate the task's instructions: the original task is kept verbatim separately, and a paraphrase of it would silently weaken its rules.\n\n" +
+  "Live instructions from the user (marked [LIVE INSTRUCTION FROM USER VIA TELEGRAM]) apply only to the cycle they arrived in. Carry one forward only if the user said it is lasting ('from now on', 'always', 'going forward'), and then quote it exactly.";
+
+export async function compactMessages(
   messages: Array<{ role: string; content: unknown }>,
   model: ReturnType<typeof getModel>,
-  sessionId: string
+  sessionId: string,
+  keepRecent: number = COMPACT_KEEP_RECENT
 ): Promise<Array<{ role: string; content: unknown }>> {
-  const toSummarize = messages.slice(0, messages.length - COMPACT_KEEP_RECENT);
-  const recent = messages.slice(messages.length - COMPACT_KEEP_RECENT);
+  const goal = messages[0];
+  const cut = chooseCompactionCut(messages, keepRecent);
+  const toSummarize = messages.slice(1, cut);
+  const recent = messages.slice(cut);
 
   if (toSummarize.length === 0) return messages;
 
@@ -1697,9 +1872,7 @@ async function compactMessages(
       messages: [
         {
           role: "user",
-          content:
-            "Summarize the following agent conversation history into a compact but detailed summary. Include: what was accomplished, current state, important findings stored in memory, any failures and what was tried. This summary will replace the history to save context.\n\n" +
-            JSON.stringify(toSummarize, null, 2),
+          content: SUMMARY_INSTRUCTIONS + "\n\n" + JSON.stringify(toSummarize, null, 2),
         },
       ],
     });
@@ -1707,77 +1880,68 @@ async function compactMessages(
     appendEvent(sessionId, {
       type: "context_compacted",
       fromMessages: messages.length,
-      toMessages: 1 + recent.length,
+      toMessages: 2 + recent.length,
       ts: new Date().toISOString(),
     });
 
-    // Inject the summary as a structured user message that clearly signals it's
-    // a history digest, not a new user instruction. This is semantically clearer
-    // than a bare user message and avoids the model treating it as a new goal.
     return [
+      goal,
       {
         role: "user",
-        content: `[Context Summary — earlier conversation compacted to save tokens]\n${summary}`,
+        content: `[Context Summary — earlier conversation compacted to save tokens. The task above is unchanged and still applies in full.]\n${summary}`,
       },
-      {
-        role: "assistant",
-        content: "Understood. I will continue from this summary.",
-      },
+      // Keep roles alternating; the tail may already open with the assistant.
+      ...(recent[0]?.role === "assistant"
+        ? []
+        : [{ role: "assistant", content: "Understood. I will continue from this summary." }]),
       ...recent,
     ];
   } catch {
-    // If compaction fails, just keep the recent messages
-    return recent;
-  }
-}
-
-// ─── Loop detection ───────────────────────────────────────────────────────────
-
-// These tools are utility calls that are naturally repeated — exclude from loop detection
-const LOOP_EXEMPT_TOOLS = new Set([
-  "get_page_state",
-  "screenshot",
-  "wait",
-  "scroll",
-  "recall",
-  "list_memories",
-  "list_credential_profiles",
-  "go_back",
-  "reload",
-  "solve_captcha",
-  "status_update",
-  "ask_user",
-  "save_credentials",
-  // NOTE: fetch_url intentionally NOT exempt — calling the same URL+args
-  // repeatedly is a real loop that should be caught and interrupted.
-]);
-
-class LoopDetector {
-  private recentActions: string[] = [];
-  private readonly WINDOW = 20;
-  private readonly THRESHOLD = 5;
-
-  record(toolName: string, args: Record<string, unknown>): void {
-    // Skip exempt tools — they're naturally repetitive
-    if (LOOP_EXEMPT_TOOLS.has(toolName)) return;
-    const key = `${toolName}:${JSON.stringify(args)}`;
-    this.recentActions.push(key);
-    if (this.recentActions.length > this.WINDOW) {
-      this.recentActions.shift();
-    }
-  }
-
-  isLooping(): boolean {
-    if (this.recentActions.length < this.WINDOW) return false;
-    const counts = new Map<string, number>();
-    for (const a of this.recentActions) {
-      counts.set(a, (counts.get(a) || 0) + 1);
-    }
-    return [...counts.values()].some((c) => c >= this.THRESHOLD);
+    // Compaction failed: drop the middle but never the goal.
+    return [goal, ...recent];
   }
 }
 
 // ─── Main TaskRunner ──────────────────────────────────────────────────────────
+
+/** The recording of the run in progress, so an interrupt can still finish it. */
+let activeRecording: { recorder: Recorder; started: () => boolean } | null = null;
+
+/**
+ * Finish the recording of the run in progress (write steps.json, replay.html
+ * and close the video). For Ctrl+C and kill signals, which exit the process
+ * before the runner's own cleanup gets to run. Returns the replay path.
+ */
+export async function finalizeRecording(summary: string): Promise<string | null> {
+  const rec = activeRecording;
+  activeRecording = null;
+  if (!rec || !rec.started()) return null;
+  try {
+    return await rec.recorder.stop(summary);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The config for a run: .slapify/config.yaml when there is one, with any
+ * inline config from the caller laid over it. Inline config with an `llm`
+ * is enough on its own, so the SDK works in a project with no .slapify folder.
+ */
+export function resolveTaskConfig(inline?: Partial<SlapifyConfig>): SlapifyConfig {
+  let base: SlapifyConfig | null = null;
+  try {
+    base = loadConfig();
+  } catch (e) {
+    if (!inline?.llm) throw e;
+  }
+  const merged = { ...(base || {}), ...(inline || {}) } as SlapifyConfig;
+  if (base?.browser || inline?.browser) {
+    merged.browser = { ...(base?.browser || {}), ...(inline?.browser || {}) };
+  }
+  merged.llm = Array.isArray(merged.llm) ? merged.llm : [merged.llm];
+  return merged;
+}
 
 export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
   const {
@@ -1785,6 +1949,10 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
     sessionId,
     headed,
     stealth,
+    persistent = false,
+    timeLimitMinutes,
+    record,
+    livePort,
     executablePath,
     saveFlow,
     flowOutputDir,
@@ -1800,7 +1968,26 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
   const emit = (event: TaskEvent) => onEvent?.(event);
 
   // Load config and credentials
-  const config = loadConfig();
+  const config = resolveTaskConfig(options.config);
+  const visionEnabled = resolveVision(config);
+
+  // Optional Jev decision model. A misconfiguration disables it with a
+  // warning rather than failing the run: Jev is an accelerator only.
+  const { client: jevClient, reason: jevOff } = JevClient.fromConfig(config.jev);
+  const jevToolsOn = !!jevClient && config.jev?.use?.tools !== false;
+  const reviewer = new ActionReviewer(
+    config.review || {},
+    jevClient,
+    config.review?.fallback === "none" ? null : getModel(llmConfigsForReview(config))
+  );
+  if (reviewer.enabled) {
+    console.log(chalk.gray(`  Action review on (${jevClient ? "Jev" : "LLM"} reviewer, ${config.review?.on_unavailable === "allow" ? "allow" : "hold"} when unavailable)`));
+  }
+  if (jevOff) {
+    console.log(chalk.yellow(`\n⚠️  Jev disabled: ${jevOff}. Continuing without it.\n`));
+  } else if (jevClient) {
+    console.log(chalk.gray(`  Jev enabled (${jevClient.model} via ${new URL(jevClient.url).host})`));
+  }
   const configDir = loadConfigDir() || process.cwd();
   // LLM fallback chain: config.llm is always an array after normalization in loadConfig.
   // We start with index 0 and advance to the next model on provider errors.
@@ -1842,6 +2029,10 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
     stealth: stealth ?? config.browser?.stealth,
   });
 
+  // Recording must be set up before the browser opens: video is encoded by
+  // agent-browser's daemon, which only sees the PATH it was launched with.
+  const recorder = record ? new Recorder(browser, record, `slapify task: ${goal.slice(0, 80)}`, { livePort }) : null;
+
   // Set up or resume session
   let session: TaskSession;
   let messages: Array<{ role: string; content: unknown }>;
@@ -1858,6 +2049,12 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
     const { rebuildMessages } = await import("./session.js");
     const events = (await import("./session.js")).loadEvents(sessionId);
     messages = rebuildMessages(events);
+    // The browser restarted with the process: every ref in that history is gone.
+    messages.push({
+      role: "user",
+      content:
+        "[SESSION RESUMED] The process restarted, so the browser page and its element refs are new. Every ref (like e123) mentioned above is stale and will fail. Before clicking or typing, get fresh refs with find_element() or get_page_state() on the current page. The task and your memory are unchanged: carry on.",
+    });
     emit({
       type: "message",
       text: `Resuming session ${sessionId} (iteration ${session.iteration})`,
@@ -1970,7 +2167,15 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
     }
   }
 
-  const mergedTools = { ...taskTools, ...customTools };
+  // Explicitly loose: the Jev tools are spread in conditionally, which would
+  // otherwise make this a union type and blur the tool-call types downstream.
+  // Tool calls are already cast where they are read, so nothing is lost.
+  const mergedTools: Record<string, any> = {
+    ...taskTools,
+    ...(jevToolsOn ? jevTools : {}),
+    ...(jevToolsOn && visionEnabled ? pursueTools : {}),
+    ...customTools,
+  };
 
   const executor = new ToolExecutor(
     browser,
@@ -1982,9 +2187,26 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
     isScheduledRun,
     schema,
     outputFile,
-    customTools
+    customTools,
+    visionEnabled,
+    llmConfigs[modelIndex],
+    config.text_filters || {},
+    jevToolsOn ? jevClient : null,
+    resolveFileRoots(config.files, configDir)
   );
-  const loopDetector = new LoopDetector();
+  const admission = new ToolAdmission();
+  executor.recorder = recorder;
+  if (recorder) activeRecording = { recorder, started: () => executor.recStarted };
+
+  // A hard time budget, enforced by the harness rather than asked of the model.
+  const deadline = timeLimitMinutes && timeLimitMinutes > 0 ? Date.now() + timeLimitMinutes * 60_000 : Infinity;
+  let timeUp = false;
+  if (Number.isFinite(deadline)) {
+    messages.push({
+      role: "user",
+      content: `[HARNESS] This run has a time budget of ${timeLimitMinutes} minutes, measured by the harness; it stops you when the time is up. Use the whole budget on the task: there is no need to call done() early.`,
+    });
+  }
 
   // Initial memory injection: add existing/inherited memory to context
   if (Object.keys(session.memory).length > 0) {
@@ -2022,9 +2244,16 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
 
   let isDone = false;
   let doneSummary = "";
+  let consecutiveIterationErrors = 0;
+  let mangledFinishRetries = 0;
 
   try {
     while (!isDone && session.iteration < maxIterations) {
+      if (Date.now() >= deadline) {
+        timeUp = true;
+        break;
+      }
+      try {
       session.iteration++;
       saveSessionMeta(session);
       onSessionUpdate?.(session);
@@ -2060,10 +2289,20 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
       emit({ type: "thinking" });
 
       // Build per-run system prompt dynamically from modular rule fragments
-      const systemPrompt = buildSystemPrompt(goal, schema, config.plugins, configDir);
+      const systemPrompt = buildSystemPrompt(goal, schema, config.plugins, configDir, visionEnabled, jevToolsOn, persistent);
+
+      // Keep only the most recent screenshot(s) as images — see pruneVisionHistory.
+      if (visionEnabled) pruneVisionHistory(messages);
+      // Drop stale heavy tool results, keeping the newest of each intact.
+      pruneToolResultHistory(messages);
 
       // ── THINK ──────────────────────────────────────────────────────────
       let result;
+      let transientRetries = 0;
+      let badArgRetries = 0;
+      let outageRound = 0;
+      let outageStartedAt: number | undefined;
+      let outageNotified = false;
       while (true) {
         try {
           result = await generateText({
@@ -2072,26 +2311,45 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
             messages: messages as Parameters<typeof generateText>[0]["messages"],
             tools: mergedTools,
           });
+          transientRetries = 0;
+          badArgRetries = 0;
           break; // Success
         } catch (error: any) {
           const errorMsg = error?.message || String(error);
-          const lowMsg = errorMsg.toLowerCase();
-          // Detect provider-level failures that warrant trying the next model:
-          // rate limits (429), payment required (402), auth errors (401/403), quota exhausted
-          const isProviderFailure =
-            lowMsg.includes("too many requests") ||
-            lowMsg.includes("429") ||
-            lowMsg.includes("402") ||
-            lowMsg.includes("payment required") ||
-            lowMsg.includes("401") ||
-            lowMsg.includes("403") ||
-            lowMsg.includes("quota") ||
-            lowMsg.includes("exhausted") ||
-            lowMsg.includes("overloaded") ||
-            lowMsg.includes("rate limit") ||
-            lowMsg.includes("billing");
+          const kind = classifyLlmError(error);
 
-          if (isProviderFailure) {
+          // The model emitted a tool call missing required fields. Hand the
+          // validation error back so it can reissue the call correctly —
+          // letting this throw ends the whole task over one bad call.
+          if (kind === "bad_tool_args" && badArgRetries < MAX_BAD_TOOL_ARG_RETRIES) {
+            badArgRetries++;
+            emit({
+              type: "message",
+              text: `⚠️ Malformed tool call (${errorMsg.slice(0, 60)}). Asking for a correction ${badArgRetries}/${MAX_BAD_TOOL_ARG_RETRIES}...`,
+            });
+            messages.push({
+              role: "user",
+              content:
+                `[SYSTEM] Your last tool call was rejected because its arguments were invalid:\n${errorMsg.slice(0, 400)}\n\n` +
+                `Reissue it with every required field present (for example, click requires "ref", type requires "ref" and "text"). ` +
+                `If you no longer need that call, do something else instead. Do not repeat the malformed call.`,
+            });
+            continue;
+          }
+
+          // Quick retries of the same model: the call just didn't complete.
+          if (kind === "transient" && transientRetries < MAX_TRANSIENT_RETRIES) {
+            transientRetries++;
+            const backoff = transientBackoffMs(transientRetries);
+            emit({
+              type: "message",
+              text: `⚠️ LLM call failed (${errorMsg.slice(0, 70)}). Retry ${transientRetries}/${MAX_TRANSIENT_RETRIES} in ${backoff / 1000}s...`,
+            });
+            await new Promise((r) => setTimeout(r, backoff));
+            continue;
+          }
+
+          if (kind === "provider" || kind === "transient") {
             const currentLabel = llmConfigs[modelIndex].label ||
               `${llmConfigs[modelIndex].provider}/${llmConfigs[modelIndex].model}`;
 
@@ -2108,18 +2366,30 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
               continue; // Retry the generateText with the new model
             }
 
-            // All models exhausted — reset to first and sleep before retrying
+            // Every model failed. Wait patiently and try again — never exit.
+            // A usage limit resets on its own; the process staying alive is
+            // what stops one outage becoming hundreds of restarts.
             modelIndex = 0;
             model = getActiveModel();
+            outageRound++;
+            outageStartedAt ??= Date.now();
+            const wait = patientBackoffMs(outageRound);
             emit({
               type: "message",
-              text: `⚠️ All models failed. Sleeping 60s before retrying from the start of the chain...`,
+              text: `⚠️ All models unavailable (${errorMsg.slice(0, 80)}). Waiting ${Math.round(wait / 1000)}s before retrying...`,
             });
-            await new Promise((resolve) => setTimeout(resolve, 60000));
+            if (!outageNotified && Date.now() - outageStartedAt >= OUTAGE_NOTIFY_AFTER_MS) {
+              outageNotified = true;
+              const mins = Math.round((Date.now() - outageStartedAt) / 60_000);
+              const note = `The LLM has been unavailable for ${mins} minutes (${errorMsg.slice(0, 160)}). Still waiting and retrying — nothing is lost.`;
+              emit({ type: "message", text: `⚠️ ${note}` });
+              if (telegram) await telegram.sendMessage(`⚠️ *Agent waiting*\n${note}`).catch(() => { });
+            }
+            await new Promise((resolve) => setTimeout(resolve, wait));
             continue;
           }
 
-          throw error; // Any other error (network, parse, etc.) — propagate
+          throw error; // Unclassified — the iteration's own recovery handles it
         }
       }
 
@@ -2135,6 +2405,12 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
         type: "llm_response",
         text: result.text || "",
         toolCalls: toolCallRecords,
+        usage: result.usage
+          ? {
+            promptTokens: result.usage.promptTokens,
+            completionTokens: result.usage.completionTokens,
+          }
+          : undefined,
         ts: new Date().toISOString(),
       });
 
@@ -2163,12 +2439,36 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
       // No tool calls = model is done thinking without acting
       if (!result.toolCalls || result.toolCalls.length === 0) {
         if (result.finishReason === "stop") {
+          // Guard: text that still contains tool-call JSON is a mangled or
+          // truncated attempt to ACT, not a considered decision to finish.
+          // Ending here silently completed long-running tasks whose whole
+          // point was to never stop, so ask for a clean reissue instead.
+          // An empty response is not a final answer either: a model that has
+          // genuinely finished says so.
+          const looksLikeToolCall =
+            /"tool_calls"/.test(result.text || "") || !(result.text || "").trim();
+          if (looksLikeToolCall && mangledFinishRetries < MAX_MANGLED_FINISH_RETRIES) {
+            mangledFinishRetries++;
+            emit({
+              type: "message",
+              text: `⚠️ Response looked like a broken tool call rather than a final answer. Asking again (${mangledFinishRetries}/${MAX_MANGLED_FINISH_RETRIES})...`,
+            });
+            messages.push({
+              role: "user",
+              content:
+                "[SYSTEM] Your last response contained tool-call JSON but it could not be parsed, most likely because it was cut off. " +
+                "Reissue ONLY the tool calls you still need, as a single complete JSON object. Keep any remember() values short (under 150 characters) so the response is not truncated again.",
+            });
+            continue;
+          }
+
           doneSummary = result.text || "Task complete.";
           isDone = true;
           break;
         }
         continue;
       }
+      mangledFinishRetries = 0;
 
       // ── ACT ────────────────────────────────────────────────────────────
       const toolResultContent: unknown[] = [];
@@ -2210,24 +2510,85 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
           break;
         }
 
-        // Loop detection
-        loopDetector.record(toolName, args);
-        if (loopDetector.isLooping()) {
+        // Admission (replaces the old loop guard). Repeats are never blocked:
+        // repeated failures and no-progress reads get guidance appended after
+        // they run. The one hold is an irreversible action that already
+        // succeeded on this page, so the agent cannot post or pay twice.
+        if ((toolName === "click" || toolName === "double_click") && typeof args.ref === "string") {
+          // A ref the browser doesn't know can't be clicked: say so now rather
+          // than reviewing an action that is going to fail anyway.
+          if ((await executor.resolveLabel(args.ref)) === "unknown-ref") {
+            const stale = {
+              ok: false,
+              error: `Unknown ref ${args.ref}: it is from an older snapshot or from before a restart, and no longer exists.`,
+              do_next: "Get fresh refs with find_element() or get_page_state() on the current page, then try again.",
+            };
+            appendEvent(session.id, { type: "tool_call", toolName, args, result: stale, ts: new Date().toISOString() });
+            toolResultContent.push({
+              type: "tool-result",
+              toolCallId: tc.toolCallId,
+              toolName,
+              result: JSON.stringify(stale),
+            });
+            continue;
+          }
+        }
+        const effect = effectOf(toolName, args, { labels: executor.labels });
+        const pageBefore = executor.pageUrl;
+        const admitted = admission.admit(toolName, args, effect, pageBefore);
+        if (!admitted.admit) {
           emit({
             type: "message",
-            text: "Loop detected — changing approach...",
+            text: `⏸️  Held a repeat of an irreversible action: ${describeCall(toolName, args, { labels: executor.labels })}`,
+          });
+          appendEvent(session.id, {
+            type: "tool_call",
+            toolName,
+            args,
+            result: admitted.heldResult,
+            ts: new Date().toISOString(),
           });
           toolResultContent.push({
             type: "tool-result",
             toolCallId: tc.toolCallId,
             toolName,
-            result: JSON.stringify({
-              ok: false,
-              error:
-                "Loop detected: you have been repeating the same actions. Change your approach or call done().",
-            }),
+            result: JSON.stringify(admitted.heldResult),
           });
           continue;
+        }
+
+        // Review irreversible actions against the policy before they happen.
+        if (reviewer.enabled && effect === "irreversible") {
+          const description = describeCall(toolName, args, { labels: executor.labels });
+          const verdict = await reviewer.review({
+            description,
+            pageUrl: executor.pageUrl,
+            pageTitle: executor.pageTitle,
+            pendingText: executor.lastTyped || undefined,
+            goal,
+          });
+          appendEvent(session.id, {
+            type: "review",
+            action: description,
+            outcome: verdict.outcome,
+            by: "by" in verdict ? verdict.by : undefined,
+            confidence: "confidence" in verdict ? verdict.confidence : undefined,
+            ms: "ms" in verdict ? verdict.ms : undefined,
+            jev: verdict.jev,
+            ts: new Date().toISOString(),
+          });
+          if (shouldHold(verdict, config.review || {})) {
+            const held = heldByReview(verdict, description);
+            emit({ type: "message", text: `🛑 Review held: ${description} (${verdict.outcome})` });
+            if (telegram) {
+              await telegram
+                .sendMessage(`🛑 *Held for review* (${verdict.outcome})\n${description}${executor.lastTyped ? `\n\n_${executor.lastTyped.slice(0, 300)}_` : ""}`)
+                .catch(() => { });
+            }
+            appendEvent(session.id, { type: "tool_call", toolName, args, result: held, ts: new Date().toISOString() });
+            toolResultContent.push({ type: "tool-result", toolCallId: tc.toolCallId, toolName, result: JSON.stringify(held) });
+            continue;
+          }
         }
 
         emit({ type: "tool_start", toolName, args });
@@ -2247,6 +2608,10 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
         let toolResult: unknown;
         try {
           toolResult = await executor.execute(toolName, args);
+          const guidance = admission.observe(
+            toolName, args, effect, pageBefore, toolResult, isFailure(toolResult)
+          );
+          if (guidance) toolResult = withGuidance(toolResult, guidance);
 
           appendEvent(session.id, {
             type: "tool_call",
@@ -2276,21 +2641,38 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
 
 
 
-          // Trim the result before storing in conversation history to avoid
-          // accumulating stale page snapshots and giant API bodies across turns.
-          // The full result is still emitted for display — this only affects what
-          // the model sees in its next turn.
-          const resultForHistory = trimToolResultForHistory(toolName, toolResult);
+          // Pull the screenshot bytes off the result (if any) before it gets
+          // serialised — base64 must travel as an image part, never as text.
+          const visionImage = takeVisionImage(toolResult);
+
+          // The model gets the FULL result for the turn it asked for it.
+          // Trimming happens later, to OLDER entries only (see
+          // pruneToolResultHistory). Trimming here meant a page snapshot was
+          // replaced by a placeholder before the model ever read it, so it
+          // could never obtain a ref — and would call get_page_state again,
+          // get another placeholder, and loop until the loop guard fired.
           const resultStrForHistory =
-            typeof resultForHistory === "string"
-              ? resultForHistory
-              : JSON.stringify(resultForHistory);
+            typeof toolResult === "string"
+              ? toolResult
+              : JSON.stringify(toolResult);
 
           toolResultContent.push({
             type: "tool-result",
             toolCallId: tc.toolCallId,
             toolName,
             result: resultStrForHistory,
+            ...(visionImage
+              ? {
+                experimental_content: [
+                  { type: "text" as const, text: resultStrForHistory },
+                  {
+                    type: "image" as const,
+                    data: visionImage.data,
+                    mimeType: visionImage.mimeType,
+                  },
+                ],
+              }
+              : {}),
           });
         } catch (err: any) {
           const errorMsg = err?.message || String(err);
@@ -2302,11 +2684,13 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
             ts: new Date().toISOString(),
           });
           emit({ type: "tool_error", toolName, error: errorMsg });
+          const failed = { ok: false, error: errorMsg };
+          const guidance = admission.observe(toolName, args, effect, pageBefore, failed, true);
           toolResultContent.push({
             type: "tool-result",
             toolCallId: tc.toolCallId,
             toolName,
-            result: JSON.stringify({ ok: false, error: errorMsg }),
+            result: JSON.stringify(guidance ? withGuidance(failed, guidance) : failed),
           });
         }
       }
@@ -2314,9 +2698,47 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
       if (toolResultContent.length > 0) {
         messages.push({ role: "tool", content: toolResultContent });
       }
+        // A completed iteration clears the failure streak.
+        consecutiveIterationErrors = 0;
+      } catch (iterErr: any) {
+        // Resilience: an unexpected error in ONE iteration must not end a
+        // long-running task. Record it, tell the model what broke so it can
+        // route around it, and carry on. Only give up if failures repeat
+        // back-to-back, which means the run is genuinely wedged rather than
+        // having hit a bad page or a one-off glitch.
+        const iterMsg = iterErr?.message || String(iterErr);
+        consecutiveIterationErrors++;
+        appendEvent(session.id, {
+          type: "tool_error",
+          toolName: "iteration",
+          args: {},
+          error: iterMsg,
+          ts: new Date().toISOString(),
+        });
+        emit({
+          type: "message",
+          text: `⚠️ Iteration error ${consecutiveIterationErrors}/${MAX_CONSECUTIVE_ITERATION_ERRORS}: ${iterMsg.slice(0, 110)}`,
+        });
+        if (consecutiveIterationErrors >= MAX_CONSECUTIVE_ITERATION_ERRORS) {
+          throw iterErr; // genuinely stuck — let the outer handler fail the run
+        }
+        messages.push({
+          role: "user",
+          content:
+            `[SYSTEM] The previous step failed with: ${iterMsg.slice(0, 300)}\n` +
+            `This is recoverable. Take a DIFFERENT action, or navigate to a known-good page and continue the task. Do not repeat the failing action.`,
+        });
+        await new Promise((r) => setTimeout(r, 3000));
+        continue;
+      }
     }
 
-    if (session.iteration >= maxIterations && !isDone) {
+    if (timeUp && !isDone) {
+      doneSummary = `Time limit of ${timeLimitMinutes} minutes reached after ${session.iteration} iterations.`;
+      session.finalSummary = doneSummary;
+      emit({ type: "message", text: `⏱️ ${doneSummary}` });
+      updateSessionStatus(session, "completed");
+    } else if (session.iteration >= maxIterations && !isDone) {
       doneSummary = `Task hit the maximum iteration limit (${maxIterations}) without completing.`;
       updateSessionStatus(session, "failed");
     } else if (isDone) {
@@ -2351,6 +2773,10 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
     throw err;
   } finally {
     if (telegram) telegram.stop();
+    if (recorder && activeRecording?.recorder === recorder) {
+      const replay = await finalizeRecording(session!.finalSummary || "Run ended");
+      if (replay) emit({ type: "message", text: `🎬 Recording: ${replay}` });
+    }
     try {
       browser.close();
     } catch { }

@@ -1,3 +1,4 @@
+import type { SlapifyConfig } from "../types.js";
 export type TaskStatus =
   | "running"
   | "completed"
@@ -44,6 +45,8 @@ export type SessionEvent =
       type: "llm_response";
       text: string;
       toolCalls: ToolCallRecord[];
+      /** Tokens for this turn, when the provider reports them. */
+      usage?: { promptTokens: number; completionTokens: number };
       ts: string;
     }
   | {
@@ -58,6 +61,17 @@ export type SessionEvent =
       toolName: string;
       args: Record<string, unknown>;
       error: string;
+      ts: string;
+    }
+  | {
+      type: "review";
+      action: string;
+      outcome: "clear" | "caution" | "unavailable";
+      by?: "jev" | "llm";
+      confidence?: number;
+      ms?: number;
+      /** Jev's first answer, when it was too unsure and the LLM decided. */
+      jev?: { choice: string; confidence: number };
       ts: string;
     }
   | { type: "memory_update"; key: string; value: string; ts: string }
@@ -79,10 +93,28 @@ export interface ToolCallRecord {
 
 export interface TaskRunOptions {
   goal: string;
+  /**
+   * Inline config, laid over .slapify/config.yaml (or used on its own when
+   * there is no config file, as long as it includes `llm`).
+   */
+  config?: Partial<SlapifyConfig>;
   sessionId?: string;
   headed?: boolean;
   /** Override browser.stealth from config (undefined = use config). */
   stealth?: boolean;
+  /**
+   * Run until stopped. The model cannot end the task: done() is refused and a
+   * text-only reply is treated as a pause, not a finish. For monitors and
+   * engagement loops, where the prompt saying "never stop" is not enough —
+   * that alone let three different failure modes end runs early.
+   */
+  persistent?: boolean;
+  /** Stop the task after this many minutes of running, whatever the model is doing. */
+  timeLimitMinutes?: number;
+  /** Record the run into this folder: annotated frames, video.webm, replay.html. */
+  record?: string;
+  /** With `record`: also serve a live view of the browser on this local port (0 = any free port). */
+  livePort?: number;
   executablePath?: string;
   saveFlow?: boolean;
   /** Directory to write the .flow file into (default: cwd) */
