@@ -99,12 +99,17 @@ npx slapify task "..." --save-flow         # save steps as a reusable .flow file
 npx slapify task "..." --max-iterations N  # cap agent loop iterations (default 400)
 npx slapify task "..." --stealth           # hide automation fingerprints (overrides config)
 npx slapify task "..." --no-stealth        # force stealth off even if config enables it
+npx slapify task "..." --persistent        # run until you stop it: the agent can't end the task itself
+npx slapify task "..." --time-limit 30     # stop after 30 minutes, enforced by the harness
+npx slapify task "..." --record runs/demo  # save annotated frames, video.webm and replay.html
+npx slapify task "..." --record runs/demo --live   # ...and watch it live at http://127.0.0.1:8790/
 npx slapify task "..." --schema <json> --output <file>  # structured JSON output (see below)
 
 # Sessions — every task run is a session with its own memory and event log
 npx slapify task --list-sessions           # list past and running sessions
 npx slapify task --logs <id>               # show the event log for a session
 npx slapify task "..." --session <id>      # resume a session, keeping its memory
+npx slapify task "..." --memory-from <id>  # NEW session with a new goal, inheriting another session's memory
 ```
 
 Resuming with `--session` restores the session's memory **and** its conversation history. That's usually what you want, but it means an instruction given earlier in that session (say, via Telegram) comes back with it. Start a fresh session when you want a clean slate.
