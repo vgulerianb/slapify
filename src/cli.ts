@@ -99,7 +99,7 @@ const program = new Command();
 program
   .name("slapify")
   .description("AI-powered browser automation that slaps — run autonomous agents, audit performance, and write E2E tests in plain English")
-  .version("0.0.24", "-v, -V, --version");
+  .version("0.0.25", "-v, -V, --version");
 
 // Init command
 program
