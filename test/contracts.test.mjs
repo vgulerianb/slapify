@@ -25,6 +25,7 @@ test("the submit chord is irreversible, a plain Enter is not", () => {
 test("reads, navigation and control are classified statically", () => {
   assert.equal(effectOf("get_page_state", {}, ctx), "read");
   assert.equal(effectOf("find_element", {}, ctx), "read");
+  assert.equal(effectOf("get_otp", { profile_name: "admin" }, ctx), "read");
   assert.equal(effectOf("navigate", { url: "u" }, ctx), "navigate");
   assert.equal(effectOf("done", {}, ctx), "control");
 });

@@ -269,6 +269,18 @@ export const taskTools = {
     }),
   }),
 
+  get_otp: tool({
+    description:
+      "Get the current one-time code (2FA / OTP) for a credential profile that has one configured (hasOtp in list_credential_profiles): " +
+      "the live authenticator (TOTP) code, or the profile's fixed test code. Call it when the site asks for the code, usually right after the password step, " +
+      "and type it straight away: TOTP codes change every 30 seconds. Use this instead of ask_user() whenever the profile has a code configured.",
+    parameters: z.object({
+      profile_name: z
+        .string()
+        .describe("The name of the credential profile to get the code for"),
+    }),
+  }),
+
   // ── Memory ────────────────────────────────────────────────────────────────
 
   remember: tool({

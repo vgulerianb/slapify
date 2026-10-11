@@ -471,6 +471,51 @@ If no login form found: { "found": false }`;
   }
 
   /**
+   * Find where a two-factor one-time code goes, on the page shown after a
+   * password login. Null when the page is not asking for one.
+   */
+  async findOtpForm(browserState: BrowserState): Promise<OtpFormInfo | null> {
+    const model = getModel(this.config);
+
+    const systemPrompt = `You are analyzing a webpage shown right after a username/password login, to find where a two-factor one-time code is entered.
+
+Page snapshot:
+${browserState.snapshot}
+
+Find:
+1. The input for the one-time code (2FA, OTP, verification code, authenticator code, security code) (ref)
+2. The button that submits the code (ref), if there is one
+
+Respond with JSON:
+{
+  "found": true,
+  "inputRef": "@e1",
+  "submitRef": "@e2"
+}
+
+If the page does not ask for a one-time code: { "found": false }`;
+
+    const response = await generateText({
+      model,
+      system: systemPrompt,
+      prompt: "Find the one-time code input on this page.",
+      maxTokens: 300,
+    });
+
+    try {
+      const jsonMatch = response.text.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) return null;
+
+      const result = JSON.parse(jsonMatch[0]);
+      if (!result.found || !result.inputRef) return null;
+
+      return { inputRef: result.inputRef, submitRef: result.submitRef || undefined };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Verify an assertion/condition on the page
    */
   async verifyCondition(
@@ -596,6 +641,12 @@ export interface LoginFormInfo {
   usernameRef: string;
   passwordRef: string;
   submitRef: string;
+}
+
+export interface OtpFormInfo {
+  inputRef: string;
+  /** Absent when the code is submitted with Enter. */
+  submitRef?: string;
 }
 
 export interface VerificationResult {

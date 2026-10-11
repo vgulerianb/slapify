@@ -40,6 +40,7 @@ import {
 } from "./types.js";
 import { CredentialProfile, SlapifyConfig, LLMConfig } from "../types.js";
 import { TelegramService } from "../chat/telegram.js";
+import { hasOneTimeCode, oneTimeCode } from "../auth/otp.js";
 
 // Compact context when accumulated message text exceeds this character threshold.
 // Character-based is more accurate than message-count because tool results vary wildly in size.
@@ -73,6 +74,9 @@ const MAX_CONSECUTIVE_ITERATION_ERRORS = 5;
 // How many times to ask for a clean reissue when a "final answer" still looks
 // like broken tool-call JSON, before accepting it as a genuine finish.
 const MAX_MANGLED_FINISH_RETRIES = 3;
+// get_otp waits for the next TOTP code rather than hand out one with fewer
+// seconds left than this: the model still needs a turn to type it.
+const OTP_MIN_VALID_SECONDS = 8;
 
 // System prompt is now built dynamically per-task by `src/task/prompt.ts`
 // using modular rule fragments from `src/task/rules/`.
@@ -800,6 +804,7 @@ class ToolExecutor {
           hasLocalStorage: !!(
             p.localStorage && Object.keys(p.localStorage).length > 0
           ),
+          hasOtp: hasOneTimeCode(p),
         }));
         return { profiles };
       }
@@ -839,8 +844,40 @@ class ToolExecutor {
           ok: true,
           username: profile.username || profile.email || profile.phone || "",
           password: profile.password || "",
-          hint: "Use get_page_state() to find the username/password fields, then type into them and submit the form.",
+          hint:
+            "Use get_page_state() to find the username/password fields, then type into them and submit the form." +
+            (hasOneTimeCode(profile)
+              ? ` This profile has a one-time code configured: if the site then asks for a 2FA code, call get_otp("${profileName}").`
+              : ""),
         };
+      }
+
+      case "get_otp": {
+        const profileName = args.profile_name as string;
+        const profile = this.credentials[profileName];
+        if (!profile) {
+          return { ok: false, error: `Profile '${profileName}' not found` };
+        }
+        if (!hasOneTimeCode(profile)) {
+          return {
+            ok: false,
+            error: `Profile '${profileName}' has no totp_secret or fixed_otp configured.`,
+            do_next: "Ask the user for the code with ask_user().",
+          };
+        }
+        try {
+          // A code with only seconds left would expire while it is being typed.
+          const otp = (await oneTimeCode(profile, OTP_MIN_VALID_SECONDS))!;
+          return {
+            ok: true,
+            code: otp.code,
+            ...(otp.expiresInSeconds !== undefined ? { expires_in_seconds: otp.expiresInSeconds } : {}),
+            hint: "Type it into the one-time code field now and submit. If the site rejects it, call get_otp again for a fresh code.",
+          };
+        } catch (e: any) {
+          // The message describes the problem, never the secret itself.
+          return { ok: false, error: `Could not generate a code for '${profileName}': ${e.message}` };
+        }
       }
 
       // ── CAPTCHA ────────────────────────────────────────────────────────
@@ -1589,7 +1626,10 @@ class ToolExecutor {
     if (profile.cookies) {
       for (const cookie of profile.cookies) {
         try {
-          await this.browser.setCookie(cookie.name, cookie.value);
+          await this.browser.setCookie(cookie.name, cookie.value, {
+            domain: cookie.domain,
+            path: cookie.path,
+          });
         } catch {
           // continue on individual cookie errors
         }
@@ -1766,6 +1806,18 @@ function withGuidance(result: unknown, guidance: string): unknown {
     return { ...(result as object), guidance };
   }
   return `${typeof result === "string" ? result : JSON.stringify(result)}\n\n[guidance] ${guidance}`;
+}
+
+/**
+ * A tool result as it goes into the session log and progress events. The
+ * model still gets get_otp's code to type, but the code stays out of the
+ * persisted log: a fixed_otp is as sensitive as a password.
+ */
+export function forLog(toolName: string, result: unknown): unknown {
+  if (toolName === "get_otp" && result && typeof result === "object" && "code" in result) {
+    return { ...(result as object), code: "[redacted]" };
+  }
+  return result;
 }
 
 /** Tools whose results are large enough to be worth dropping once stale. */
@@ -2644,18 +2696,19 @@ export async function runTask(options: TaskRunOptions): Promise<TaskSession> {
           );
           if (guidance) toolResult = withGuidance(toolResult, guidance);
 
+          const logged = forLog(toolName, toolResult);
           appendEvent(session.id, {
             type: "tool_call",
             toolName,
             args,
-            result: toolResult,
+            result: logged,
             ts: new Date().toISOString(),
           });
 
           const resultStr =
-            typeof toolResult === "string"
-              ? toolResult
-              : JSON.stringify(toolResult);
+            typeof logged === "string"
+              ? logged
+              : JSON.stringify(logged);
           emit({
             type: "tool_done",
             toolName,

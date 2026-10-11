@@ -16,6 +16,7 @@ import * as yaml from "yaml";
 import * as readline from "readline";
 import { JevClient } from "../jev/client.js";
 import { checkStatement, hasInterruption } from "../jev/decisions.js";
+import { hasOneTimeCode, oneTimeCode } from "../auth/otp.js";
 
 // Jev fast-path thresholds. Deliberately asymmetric: Jev may only take the
 // shortcut in the direction where being wrong is cheap. A missed popup gets
@@ -618,7 +619,10 @@ export class TestRunner {
       if (profile.cookies) {
         for (const cookie of profile.cookies) {
           try {
-            await this.browser.setCookie(cookie.name, cookie.value);
+            await this.browser.setCookie(cookie.name, cookie.value, {
+              domain: cookie.domain,
+              path: cookie.path,
+            });
             actions.push({
               type: "fill",
               description: `Set cookie: ${cookie.name}`,
@@ -733,38 +737,55 @@ export class TestRunner {
       // Wait for navigation
       await this.browser.wait(2000);
 
-      // Handle TOTP if configured
-      if (profile.totp_secret) {
-        const totp = this.generateTOTP(profile.totp_secret);
-        // TODO: Find OTP input and fill
-        actions.push({
-          type: "fill",
-          description: `Entered TOTP code`,
-          timestamp: Date.now(),
-        });
-      }
-
-      // Handle fixed OTP
-      if (profile.fixed_otp) {
-        // TODO: Find OTP input and fill
-        actions.push({
-          type: "fill",
-          description: `Entered fixed OTP`,
-          timestamp: Date.now(),
-        });
+      if (hasOneTimeCode(profile)) {
+        await this.enterOneTimeCode(profile, actions);
       }
     }
   }
 
   /**
-   * Generate TOTP code from secret
+   * Second step of a login: enter the profile's one-time code (TOTP from
+   * `totp_secret`, or `fixed_otp`) if the page now asks for one. A site that
+   * skips 2FA (a remembered device) is not an error. The code itself is never
+   * written to the action log.
    */
-  private generateTOTP(secret: string): string {
-    // Basic TOTP implementation
-    // In production, use a proper TOTP library
-    const epoch = Math.floor(Date.now() / 1000 / 30);
-    // Simplified - would need proper HMAC-SHA1 implementation
-    return "000000"; // Placeholder
+  private async enterOneTimeCode(
+    profile: CredentialProfile,
+    actions: ActionLog[]
+  ): Promise<void> {
+    const form = await this.ai.findOtpForm(await this.browser.getState());
+    if (!form) {
+      actions.push({
+        type: "info",
+        description: "No one-time code was asked for after login; skipped 2FA",
+        timestamp: Date.now(),
+      });
+      return;
+    }
+
+    // Generated only now, right before typing, and never one about to expire.
+    const otp = await oneTimeCode(profile, 3);
+    if (!otp) return;
+    await this.browser.fill(form.inputRef, otp.code);
+    actions.push({
+      type: "fill",
+      description: otp.source === "totp" ? "Entered TOTP code" : "Entered fixed OTP",
+      selector: form.inputRef,
+      timestamp: Date.now(),
+    });
+
+    if (form.submitRef) {
+      await this.browser.click(form.submitRef);
+    } else {
+      await this.browser.press("Enter");
+    }
+    actions.push({
+      type: "click",
+      description: "Submitted one-time code",
+      selector: form.submitRef,
+      timestamp: Date.now(),
+    });
+    await this.browser.wait(2000);
   }
 
   /**

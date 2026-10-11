@@ -20,9 +20,13 @@ Once you have refs from a snapshot, fill the whole form in ONE response:
   type(emailRef, email) + type(passwordRef, password) + click(submitRef)
   Then in the NEXT response: wait(3) + get_page_state() to verify.
 
+### One-time codes (2FA)
+If the site asks for a one-time code and the profile you logged in with has hasOtp: true,
+call get_otp(profile_name) and type the code immediately. Do not ask the user for it.
+
 ### Asking the user for credentials
 Use ask_user() only when you genuinely need information not available elsewhere:
-- A one-time password (OTP) or 2FA code
+- A one-time password (OTP) or 2FA code that get_otp() cannot provide
 - A missing password or PIN not in the credential store
 - Confirmation before a destructive or irreversible action
 Keep questions concise. Use the hint field (e.g. "Check your authenticator app").

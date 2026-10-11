@@ -33,6 +33,7 @@ const STATIC: Record<string, Effect> = {
   recall: "read",
   list_memories: "read",
   list_credential_profiles: "read",
+  get_otp: "read",
   fetch_url: "read",
   perf_audit: "read",
   wait: "read",

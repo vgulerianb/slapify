@@ -877,11 +877,19 @@ export class BrowserAgent {
   }
 
   /**
-   * Set cookies
+   * Set a cookie. Without a domain or path it is scoped to the current page,
+   * which misses a session cookie meant for a parent domain (.example.com) or
+   * for one path only.
    */
-  async setCookie(name: string, value: string): Promise<void> {
-    // Escape special shell characters in cookie value
-    this.exec("cookies", ["set", name, value]);
+  async setCookie(
+    name: string,
+    value: string,
+    options: { domain?: string; path?: string } = {}
+  ): Promise<void> {
+    const args = ["set", name, value];
+    if (options.domain) args.push("--domain", options.domain);
+    if (options.path) args.push("--path", options.path);
+    this.exec("cookies", args);
   }
 
   /**
